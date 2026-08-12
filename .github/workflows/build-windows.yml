@@ -1,0 +1,68 @@
+name: build-windows
+
+# Freezes the Infra Monitor tray app into an .exe (PyInstaller, no cross-compile)
+# and compiles a signed Inno Setup installer. Artifacts are downloaded and
+# Authenticode-signed off-CI so the signing key never touches GitHub.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: python -m pip install --upgrade pip -r requirements.txt pyinstaller
+
+      - name: Syntax-check
+        run: python -m py_compile gmtray.py gmconfig.py gmlocal.py sshconn.py gmcheck.py gmpaths.py gmnotify.py gmstealth.py gmexport.py gmautostart.py bootstrap_ssh.py
+
+      - name: Validate the shipped config templates
+        run: python -c "import json; json.load(open('machines.json')); json.load(open('machines.example.json')); print('config templates parse OK')"
+
+      - name: Build InfraMonitor.exe
+        run: >
+          pyinstaller --onefile --windowed --name InfraMonitor
+          --icon infra-monitor.ico
+          --version-file packaging/version.txt
+          --add-data "infra-monitor.ico;."
+          --collect-all paramiko
+          --collect-all cryptography
+          --collect-all pystray
+          --collect-all fabric
+          --collect-all invoke
+          --collect-submodules PIL
+          gmtray.py
+
+      - name: Stage installer inputs
+        shell: pwsh
+        run: |
+          $stage = "packaging/staging"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item dist/InfraMonitor.exe $stage/
+          Copy-Item machines.json, machines.example.json $stage/
+          Copy-Item Install-InfraMonitor.ps1 $stage/ -ErrorAction SilentlyContinue
+          Copy-Item quickopen-root.crt, README.md, LICENSE $stage/ -ErrorAction SilentlyContinue
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Compile installer
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\installer.iss'
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: infra-monitor-windows
+          path: |
+            dist/InfraMonitor.exe
+            packaging/dist/InfraMonitor-Setup.exe
+          if-no-files-found: error

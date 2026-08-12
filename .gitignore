@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Build output
+build/
+dist/
+packaging/dist/
+packaging/staging/
+*.spec
+
+# Runtime state / logs / user config with real hosts
+inframonitor.log
+*.log
+sigcache.json
+alert_state.json
+alert_state_local.json
+elevated_scan.tmp
+machines.json.bak-*
+# Exported configs may hold real hostnames/IPs - keep them out of git.
+infra-monitor-config*.json
+# NOTE: machines.json IS committed as an EMPTY starter template, and
+# machines.example.json as a documented template. Users' real fleets live in
+# the installed copy under the app dir, not in git.
+
+# Local env / scratch / SSH material
+.env
+.env.*
+*.tmp
+id_*
+*.pem
+*.key
+*.ppk
+known_hosts
+
+# Never commit built binaries
+*.exe

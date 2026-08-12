@@ -1,0 +1,95 @@
+; Inno Setup script for Infra Monitor — a signed, single-file per-user installer.
+; Ships the tray/dashboard exe, an EMPTY starter machines.json (preserved on
+; upgrade), a documented machines.example.json, docs and the QuickOpen Root CA.
+; Compiled and Authenticode-signed in CI.
+;
+; Expects packaging\staging\ to hold: InfraMonitor.exe, machines.json,
+; machines.example.json, Install-InfraMonitor.ps1, README.md, LICENSE,
+; quickopen-root.crt.
+
+#define AppName "Infra Monitor"
+#define AppVersion "1.0.0"
+#define AppPublisher "QuickOpen (quickopen.ai)"
+#define AppURL "https://quickopen.ai/projects/infra-monitor"
+
+[Setup]
+AppId={{7F2C6A81-3E94-4B15-9D62-8A0F1C2D3E40}
+AppName={#AppName}
+AppVersion={#AppVersion}
+AppPublisher={#AppPublisher}
+AppPublisherURL={#AppURL}
+AppSupportURL={#AppURL}
+DefaultDirName={autopf}\InfraMonitor
+DefaultGroupName={#AppName}
+DisableProgramGroupPage=yes
+UninstallDisplayIcon={app}\InfraMonitor.exe
+OutputDir=dist
+OutputBaseFilename=InfraMonitor-Setup
+SetupIconFile=..\infra-monitor.ico
+Compression=lzma2
+SolidCompression=yes
+WizardStyle=modern
+WizardImageFile=branding\wizard-large.bmp
+WizardSmallImageFile=branding\wizard-small.bmp
+AppCopyright=Apache-2.0. 100%% AI-built, published on QuickOpen (quickopen.ai).
+VersionInfoCompany=QuickOpen
+VersionInfoProductName=Infra Monitor
+VersionInfoVersion=1.0.0.0
+; Per-user install (no admin). The app monitors over SSH from your account and
+; keeps its config next to the exe, which stays writable this way.
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
+ArchitecturesInstallIn64BitMode=x64compatible
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Messages]
+WelcomeLabel2=Infra Monitor is a 100%% AI-built, open-source desktop monitor for a fleet of Linux/SSH machines, published on QuickOpen (quickopen.ai).%n%nAfter installing, add your machines in machines.json (see machines.example.json).
+BeveledLabel=QuickOpen · quickopen.ai
+
+[Tasks]
+Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"
+Name: "trustca"; Description: "Trust the QuickOpen Root CA (lets Windows verify QuickOpen signatures)"; GroupDescription: "Security:"; Flags: unchecked
+
+[Files]
+Source: "staging\InfraMonitor.exe"; DestDir: "{app}"; Flags: ignoreversion
+; Ship the empty starter config only if the user has not created one yet — an
+; upgrade must never overwrite a configured fleet.
+Source: "staging\machines.json"; DestDir: "{app}"; Flags: onlyifdoesntexist
+Source: "staging\machines.example.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "staging\Install-InfraMonitor.ps1"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "staging\quickopen-root.crt"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "staging\README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme skipifsourcedoesntexist
+Source: "staging\LICENSE"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+
+[Icons]
+Name: "{group}\Infra Monitor"; Filename: "{app}\InfraMonitor.exe"; IconFilename: "{app}\InfraMonitor.exe"
+Name: "{group}\Edit machines.json"; Filename: "notepad.exe"; Parameters: """{app}\machines.json"""
+Name: "{group}\Uninstall Infra Monitor"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\Infra Monitor"; Filename: "{app}\InfraMonitor.exe"; IconFilename: "{app}\InfraMonitor.exe"; Tasks: desktopicon
+
+[Run]
+Filename: "certutil.exe"; Parameters: "-addstore -user Root ""{app}\quickopen-root.crt"""; Tasks: trustca; Flags: runhidden; StatusMsg: "Trusting the QuickOpen Root CA..."
+Filename: "{app}\InfraMonitor.exe"; Description: "Launch Infra Monitor now"; Flags: nowait postinstall skipifsilent
+
+; Clean uninstall: remove the runtime config/logs the app writes outside {app}.
+[UninstallDelete]
+Type: filesandordirs; Name: "{localappdata}\InfraMonitor"
+
+[Code]
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    if MsgBox('Also remove the QuickOpen Root CA from your Trusted Root store?' + #13#10 +
+              'Choose No if you use other QuickOpen apps that rely on it.',
+              mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+    begin
+      Exec('certutil.exe', '-delstore -user Root "QuickOpen Root CA"',
+           '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    end;
+  end;
+end;

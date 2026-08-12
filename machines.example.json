@@ -1,0 +1,100 @@
+{
+  "_comment": "Example configuration for Infra Monitor. Copy this to machines.json (next to the app / exe) and replace the example values with your own. All hosts below use reserved documentation values (192.0.2.0/24 is TEST-NET-1, example.com is reserved) and MUST be edited before anything is monitored.",
+
+  "version": 1,
+
+  "_comment_gate": "Optional network gate. Machines with scope 'local' are only polled while you are on a known network. Leave gate_domains empty and gate_fingerprints empty to disable the gate (then 'local' machines are treated as always reachable is NOT assumed - learn a network first, or mark them 'public'). Run 'InfraMonitor.exe --learn-gate <name>' on each trusted network to record its gateway.",
+  "gate_domains": [
+    "gate.example.com"
+  ],
+  "gate_fingerprints": [],
+  "gate_public_ip_fallback": false,
+
+  "_comment_allowlist": "CIDRs/IPs pushed to each machine's fail2ban ignoreip so routine monitoring can never lock you out. Keep loopback + your own private ranges.",
+  "allowlist": [
+    "127.0.0.1/8",
+    "::1",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16"
+  ],
+
+  "poll_seconds": 120,
+  "ssh_timeout": 12,
+
+  "_comment_jump_host": "Name of a machine in this list used to reach 'local' machines that have no explicit 'via'. Leave empty for all-direct setups.",
+  "jump_host": "relay-1",
+
+  "_comment_intrusion": "A logged-in SSH session from outside these CIDRs, or as a user not listed here, is reported as a possible intrusion.",
+  "expected_login_cidrs": [
+    "127.0.0.0/8",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16"
+  ],
+  "expected_login_users": [
+    "youruser",
+    "root"
+  ],
+
+  "_comment_allowed_peers": "Extra IPs/CIDRs that are 'us'. Every monitored machine is trusted automatically; list only additional trusted peers here.",
+  "allowed_peers": [],
+
+  "machines": [
+    {
+      "_comment": "A publicly reachable bastion/relay host, checked directly and used as jump_host for the local machines below.",
+      "name": "relay-1",
+      "ip": "192.0.2.10",
+      "user": "youruser",
+      "scope": "public",
+      "via": null,
+      "alias": null,
+      "gpu": null,
+      "enabled": true,
+      "bootstrapped": false,
+      "check_quickpod": false,
+      "check_nvidia": false
+    },
+    {
+      "_comment": "A GPU box on a private network, reached through relay-1. check_nvidia turns on the optional nvidia-smi health check.",
+      "name": "gpu-1",
+      "ip": "192.0.2.20",
+      "user": "youruser",
+      "scope": "local",
+      "via": "relay-1",
+      "alias": null,
+      "gpu": true,
+      "enabled": true,
+      "bootstrapped": false,
+      "check_quickpod": false,
+      "check_nvidia": true
+    },
+    {
+      "_comment": "A plain public server - no GPU, no optional service checks. Just health, load, disk, logins.",
+      "name": "web-1",
+      "ip": "192.0.2.30",
+      "user": "youruser",
+      "scope": "public",
+      "via": null,
+      "alias": null,
+      "gpu": null,
+      "enabled": true,
+      "bootstrapped": false,
+      "check_quickpod": false,
+      "check_nvidia": false
+    }
+  ],
+
+  "_comment_local_watch": "Watches THIS Windows PC (the one the SSH checks can never see). trusted_images holds full paths you have judged safe.",
+  "local_watch": {
+    "enabled": true,
+    "poll_seconds": 60,
+    "trusted_publishers": [],
+    "trusted_images": [],
+    "trusted_peers": [],
+    "alert_outbound": true,
+    "alert_unverified": false
+  },
+
+  "autostart": true
+}
