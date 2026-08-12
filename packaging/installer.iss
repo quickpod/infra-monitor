@@ -8,7 +8,7 @@
 ; quickopen-root.crt.
 
 #define AppName "Infra Monitor"
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.1"
 #define AppPublisher "QuickOpen (quickopen.ai)"
 #define AppURL "https://quickopen.ai/projects/infra-monitor"
 
@@ -34,7 +34,7 @@ WizardSmallImageFile=branding\wizard-small.bmp
 AppCopyright=Apache-2.0. 100%% AI-built, published on QuickOpen (quickopen.ai).
 VersionInfoCompany=QuickOpen
 VersionInfoProductName=Infra Monitor
-VersionInfoVersion=1.0.0.0
+VersionInfoVersion=1.0.1.0
 ; Per-user install (no admin). The app monitors over SSH from your account and
 ; keeps its config next to the exe, which stays writable this way.
 PrivilegesRequired=lowest
