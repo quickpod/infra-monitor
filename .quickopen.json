@@ -6,6 +6,9 @@
   "license": "Apache-2.0",
   "description": "Infra Monitor is a local desktop agent that watches a fleet of Linux/SSH machines and shows their health at a glance: reachability, load, disk and memory, listening ports, logins and possible intrusions, service checks, and — optionally, per machine — GPU/NVIDIA and other custom probes. It polls over SSH on an interval, raises desktop toast alerts on anomalies, and keeps a system-tray dashboard. Everything is user-configurable through a simple machines.json (see machines.example.json): you define your own hosts, users, jump host, allowlisted networks, poll interval and per-machine checks. Nothing is hardcoded and nothing leaves your machine.",
   "aiStack": "Python (tkinter, pystray), paramiko/fabric SSH, requests",
-  "platforms": ["windows"],
+  "platforms": [
+    "windows",
+    "linux"
+  ],
   "buildEntry": "gmtray.py"
 }
