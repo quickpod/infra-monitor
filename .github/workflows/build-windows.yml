@@ -66,3 +66,9 @@ jobs:
             dist/InfraMonitor.exe
             packaging/dist/InfraMonitor-Setup.exe
           if-no-files-found: error
+      - name: Upload staging (for signed repack)
+        uses: actions/upload-artifact@v4
+        with:
+          name: infra-monitor-staging
+          path: packaging/staging
+          if-no-files-found: error

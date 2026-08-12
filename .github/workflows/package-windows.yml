@@ -1,0 +1,39 @@
+name: package-windows
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag holding the signed exe
+        required: true
+      build_run_id:
+        description: Run id of the build-windows run whose staging to reuse
+        required: true
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download staging from build run
+        uses: actions/download-artifact@v4
+        with:
+          name: infra-monitor-staging
+          path: packaging/staging
+          run-id: ${{ github.event.inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - name: Replace exe with the signed one from the release
+        shell: pwsh
+        run: |
+          gh release download "${{ github.event.inputs.tag }}" --pattern "InfraMonitor.exe" -D packaging\staging --clobber
+          (Get-AuthenticodeSignature "packaging\staging\InfraMonitor.exe").Status
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Compile installer from signed contents
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging\installer.iss'
+      - name: Upload signed-content installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: infra-monitor-setup-signed
+          path: packaging/dist/InfraMonitor-Setup.exe
+          if-no-files-found: error

@@ -8,11 +8,12 @@
 ; quickopen-root.crt.
 
 #define AppName "Infra Monitor"
-#define AppVersion "1.0.1"
+#define AppVersion "1.0.2"
 #define AppPublisher "QuickOpen (quickopen.ai)"
 #define AppURL "https://quickopen.ai/projects/infra-monitor"
 
 [Setup]
+AppMutex=QuickOpen.InfraMonitor
 AppId={{7F2C6A81-3E94-4B15-9D62-8A0F1C2D3E40}
 AppName={#AppName}
 AppVersion={#AppVersion}
@@ -34,7 +35,7 @@ WizardSmallImageFile=branding\wizard-small.bmp
 AppCopyright=Apache-2.0. 100%% AI-built, published on QuickOpen (quickopen.ai).
 VersionInfoCompany=QuickOpen
 VersionInfoProductName=Infra Monitor
-VersionInfoVersion=1.0.1.0
+VersionInfoVersion=1.0.2.0
 ; Per-user install (no admin). The app monitors over SSH from your account and
 ; keeps its config next to the exe, which stays writable this way.
 PrivilegesRequired=lowest
@@ -75,21 +76,8 @@ Filename: "{app}\InfraMonitor.exe"; Description: "Launch Infra Monitor now"; Fla
 
 ; Clean uninstall: remove the runtime config/logs the app writes outside {app}.
 [UninstallDelete]
+; Infra Monitor keeps all state (machines.json, settings, logs) next to the
+; exe, so removing the install dir removes every trace.
+Type: filesandordirs; Name: "{app}"
 Type: filesandordirs; Name: "{localappdata}\InfraMonitor"
 
-[Code]
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-var
-  ResultCode: Integer;
-begin
-  if CurUninstallStep = usUninstall then
-  begin
-    if MsgBox('Also remove the QuickOpen Root CA from your Trusted Root store?' + #13#10 +
-              'Choose No if you use other QuickOpen apps that rely on it.',
-              mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
-    begin
-      Exec('certutil.exe', '-delstore -user Root "QuickOpen Root CA"',
-           '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    end;
-  end;
-end;

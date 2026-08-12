@@ -28,6 +28,16 @@ from tkinter import ttk, messagebox, filedialog
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gmconfig, gmcheck, gmnotify, gmlocal, gmpaths, gmautostart, gmstealth
 
+# Single-instance marker: the installer's AppMutex checks this to warn the
+# user to close the app before install/uninstall. Harmless off Windows.
+if os.name == "nt":
+    try:
+        import ctypes
+        ctypes.windll.kernel32.CreateMutexW(None, False, "QuickOpen.InfraMonitor")
+    except Exception:
+        pass
+
+
 # pythonw.exe has no console: anything written to stderr is discarded, so a
 # crashed poller thread leaves the dashboard frozen on its last snapshot with
 # no clue why. That happened. Everything goes to a file instead. A windowed
