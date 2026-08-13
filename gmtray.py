@@ -27,6 +27,22 @@ from tkinter import ttk, messagebox, filedialog
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gmconfig, gmcheck, gmnotify, gmlocal, gmpaths, gmautostart, gmstealth
+try:
+    import gmtheme
+    from gmtheme import TH, UI, MONO
+except ImportError as _ex:          # pragma: no cover - dependency guard
+    # gmtheme pulls in the Aura design system (customtkinter + darkdetect). The
+    # frozen exe bundles them; a source checkout may not have them yet, and a
+    # bare "ModuleNotFoundError: customtkinter" from a --windowed build goes to
+    # a stderr nobody can see. Say it where it will be read instead.
+    import tkinter.messagebox as _mb
+    _msg = ("Infra Monitor needs its display dependencies:\n\n"
+            "    pip install -r requirements.txt\n\n%s" % _ex)
+    try:
+        _r = tk.Tk(); _r.withdraw(); _mb.showerror("Infra Monitor", _msg)
+    except Exception:
+        print(_msg, file=sys.stderr)
+    sys.exit(2)
 
 # Single-instance marker: the installer's AppMutex checks this to warn the
 # user to close the app before install/uninstall. Harmless off Windows.
@@ -52,24 +68,37 @@ log = logging.getLogger("inframonitor")
 import pystray
 from PIL import Image, ImageDraw
 
-# Reserved STATUS palette (never themed, never reused as series colors).
-GOOD, WARNING, SERIOUS, CRITICAL = "#0ca30c", "#fab219", "#ec835a", "#d03b3b"
-GREY = "#9aa0a6"
-INK, INK_MUTED = "#1a1a19", "#767676"
-GREEN, AMBER, RED = GOOD, WARNING, CRITICAL     # names used by the tray icon
+# TRAY ICON palette. Deliberately NOT themed: the icon is painted into the OS
+# notification area over whatever the shell puts behind it, so it keeps one
+# vivid fixed set rather than following the app's own light/dark. Everything
+# INSIDE the window takes its status colours from the Aura tokens (gmtheme.TH),
+# which move with the surface they are drawn on.
+GREY, GREEN, AMBER, RED = "#9aa0a6", "#0ca30c", "#fab219", "#d03b3b"
 
-# On a light surface `warning` and `serious` are below 3:1 BY DESIGN. The
+
+def sev_colours():
+    """Severity -> colour for the Treeview row tags, in the current theme."""
+    return {"CRIT": TH.crit, "HIGH": TH.serious, "WARN": TH.warn,
+            "INFO": TH.muted, "OK": TH.good}
+
+
+def state_colours():
+    """Stealth port state -> colour, in the current theme."""
+    return {"open": TH.crit, "closed": TH.warn, "stealth": TH.good,
+            "unreachable": TH.muted, "blocked": TH.muted, "error": TH.muted}
+
+# `warn` and `serious` sit below 3:1 on the light surface BY DESIGN. The
 # mitigation is that every status is paired with a word, so severity is never
 # carried by hue alone - which also makes the dashboard readable for the ~8% of
 # men with a colour vision deficiency, and in a screenshot printed in mono.
 def severity(pct):
     if pct >= 95:
-        return CRITICAL, "CRIT"
+        return TH.crit, "CRIT"
     if pct >= 85:
-        return SERIOUS, "HIGH"
+        return TH.serious, "HIGH"
     if pct >= 70:
-        return WARNING, "WARN"
-    return GOOD, "OK"
+        return TH.warn, "WARN"
+    return TH.good, "OK"
 
 
 def worst_colour(snap):
@@ -107,38 +136,35 @@ def draw_dial(cv, x, y, r, pct, label, sub=""):
     pct = max(0, min(100, pct if isinstance(pct, (int, float)) else 0))
     col, word = severity(pct)
     cv.create_arc(x - r, y - r, x + r, y + r, start=225, extent=-270,
-                  style="arc", width=5, outline="#e9e9e9")
+                  style="arc", width=5, outline=TH.track)
     if pct > 0:
         cv.create_arc(x - r, y - r, x + r, y + r, start=225,
                       extent=-270 * pct / 100.0, style="arc", width=5,
                       outline=col)
-    cv.create_text(x, y - 3, text=f"{int(pct)}", fill=INK,
-                   font=("Segoe UI", 10, "bold"))
-    cv.create_text(x, y + 9, text=label, fill=INK_MUTED, font=("Segoe UI", 6))
+    cv.create_text(x, y - 3, text=f"{int(pct)}", fill=TH.text,
+                   font=(UI, 10, "bold"))
+    cv.create_text(x, y + 9, text=label, fill=TH.muted, font=(UI, 6))
     # Severity word stays even at this size: it is the non-colour channel, so
     # dropping it to save pixels would leave hue carrying the meaning alone.
-    cv.create_text(x, y + r + 6, text=word, fill=INK,
-                   font=("Segoe UI", 6, "bold"))
+    cv.create_text(x, y + r + 6, text=word, fill=TH.text,
+                   font=(UI, 6, "bold"))
     if sub:
-        cv.create_text(x, y + r + 15, text=sub, fill=INK_MUTED,
-                       font=("Segoe UI", 6))
+        cv.create_text(x, y + r + 15, text=sub, fill=TH.muted,
+                       font=(UI, 6))
 
 
 # ------------------------------------------------------------- ranked bars
 # ONE hue, not a categorical palette. Every bar in these charts measures the
 # same thing - how many connections - so colour carries no identity here and
-# giving each bar its own would imply a difference that does not exist. It is
-# also deliberately NOT a status colour: the reserved palette above means
-# good/warning/serious/critical and must never be borrowed to mean "series".
-# Checked against this app's white surface: 4.42:1 contrast, and dE >= 15 from
-# all four status hues and from the muted ink, so it cannot impersonate one.
-SERIES = "#2a78d6"
-# The folded-up tail. A lighter step of the SAME ramp, so it reads as a
-# leftover rather than a ninth competitor - it is routinely longer than the
-# top-ranked bar, and in full series colour that makes a descending chart look
-# broken. Step 250 is the lightest the ramp allows against a light surface
-# while a bar still reads as a bar (2.06:1); its value is directly labelled.
-SERIES_RESIDUAL = "#86b6ef"
+# giving each bar its own would imply a difference that does not exist. The hue
+# is the app's Aura ACCENT (TH.series), deliberately not a status colour: the
+# status palette means good/warning/serious/critical and must never be borrowed
+# to mean "series". The accent is dE-distant from all four in both themes, so a
+# bar can never be misread as a fault.
+# The folded-up tail (TH.series_residual) is the same accent blended toward the
+# surface, so it reads as a leftover rather than a ninth competitor - it is
+# routinely longer than the top-ranked bar, and in full series colour that
+# makes a descending chart look broken. Its value is directly labelled.
 BAR_H, BAR_PITCH, BAR_R = 12, 18, 4      # <=24px thick, 6px air, 4px data-end
 
 
@@ -166,12 +192,12 @@ def draw_ranked_bars(cv, title, items, x=0, y=0, width=420, gutter=150):
     says what is plotted, and every bar is directly labelled with its value -
     direct labels come before gridlines. Labels stay in ink tokens; the colour
     lives in the mark, never in the text."""
-    cv.create_text(x, y, text=title, anchor="nw", fill=INK,
-                   font=("Segoe UI", 8, "bold"))
+    cv.create_text(x, y, text=title, anchor="nw", fill=TH.text,
+                   font=(UI, 8, "bold"))
     top = y + 18
     if not items:
         cv.create_text(x, top + 4, text="nothing to show", anchor="nw",
-                       fill=INK_MUTED, font=("Segoe UI", 8))
+                       fill=TH.muted, font=(UI, 8))
         return
     valw = 34
     x0 = x + gutter
@@ -181,15 +207,15 @@ def draw_ranked_bars(cv, title, items, x=0, y=0, width=420, gutter=150):
         cy = top + i * BAR_PITCH
         # Truncated to the gutter so a long path can never run under the bars.
         txt = label if len(label) <= 24 else label[:23] + "…"
-        cv.create_text(x, cy + BAR_H / 2, text=txt, anchor="w", fill=INK_MUTED,
-                       font=("Segoe UI", 8))
+        cv.create_text(x, cy + BAR_H / 2, text=txt, anchor="w", fill=TH.muted,
+                       font=(UI, 8))
         w = max(2, int(span * val / hi))
         _rbar(cv, x0, cy, x0 + w, cy + BAR_H, BAR_R,
-              SERIES_RESIDUAL if residual else SERIES)
+              TH.series_residual if residual else TH.series)
         # Value at the tip, always OUTSIDE the bar, so it can never be clipped
         # by its own mark however short the bar is.
         cv.create_text(x0 + w + 6, cy + BAR_H / 2, text=str(val), anchor="w",
-                       fill=INK, font=("Segoe UI", 8))
+                       fill=TH.text, font=(UI, 8))
 
 
 def local_detail_lines(r):
@@ -291,8 +317,11 @@ class Tooltip:
         # to paste into a ticket, so it has to be selectable too.
         t = tk.Text(self.tip, wrap="word", width=88, height=min(
             10, max(1, len(self.text) // 80 + self.text.count("\n") + 1)),
-            bg="#ffffe0", relief="solid", borderwidth=1,
-            font=("Segoe UI", 8), padx=6, pady=4)
+            bg=TH.tip_bg, fg=TH.text, insertbackground=TH.text,
+            selectbackground=TH.accent_soft, selectforeground=TH.text,
+            highlightthickness=1, highlightbackground=TH.border,
+            relief="flat", borderwidth=0,
+            font=(UI, 8), padx=6, pady=4)
         t.insert("1.0", self.text)
         t.configure(state="normal")             # keep it selectable/copyable
         t.pack()
@@ -310,9 +339,10 @@ def copyable(parent, text, width=None, **kw):
     into a ticket is quietly hostile."""
     v = tk.StringVar(value=text)
     e = tk.Entry(parent, textvariable=v, state="readonly", relief="flat",
-                 readonlybackground=kw.pop("bg", "white"),
-                 fg=kw.pop("fg", INK), bd=0, highlightthickness=0,
-                 font=kw.pop("font", ("Segoe UI", 8)),
+                 readonlybackground=kw.pop("bg", TH.surface),
+                 fg=kw.pop("fg", TH.text), bd=0, highlightthickness=0,
+                 selectbackground=TH.accent_soft, selectforeground=TH.text,
+                 font=kw.pop("font", (UI, 8)),
                  width=width or max(8, min(len(text) + 1, 120)))
     return e
 
@@ -323,15 +353,35 @@ class Dashboard(tk.Toplevel):
         self.app = app
         self.title("Infra Monitor")
         self.geometry("1400x740")
-        self.configure(bg="white")
+        self.configure(bg=TH.bg)
         self.protocol("WM_DELETE_WINDOW", self.hide)
 
-        top = tk.Frame(self, bg="white"); top.pack(fill="x", padx=8, pady=(5, 2))
-        self.status = tk.Label(top, text="", bg="white", anchor="w",
-                               font=("Segoe UI", 9))
-        self.status.pack(side="left")
-        tk.Button(top, text="Refresh now", command=self.app.poll_now)\
-            .pack(side="right")
+        # ---- Aura header: brand, live status, actions, then the accent beam.
+        # The same header/beam the scaffolded QuickOpen apps carry, rebuilt on
+        # a Toplevel because this window is a Notebook of dense tables rather
+        # than the sidebar scaffold AuraApp provides.
+        head = tk.Frame(self, bg=TH.bg)
+        head.pack(fill="x", padx=12, pady=(12, 9))
+        self._brand_icon = None
+        try:
+            img = tk.PhotoImage(file=gmpaths.asset("infra-monitor.png"))
+            k = max(1, round(img.width() / 22))
+            self._brand_icon = img.subsample(k, k)   # kept: tk drops unref'd
+            tk.Label(head, image=self._brand_icon, bd=0, bg=TH.bg)\
+                .pack(side="left", padx=(0, 9))
+        except Exception:
+            pass
+        tk.Label(head, text="Infra Monitor", bg=TH.bg, fg=TH.text,
+                 font=(UI, 13, "bold")).pack(side="left")
+        self.status = tk.Label(head, text="", bg=TH.bg, fg=TH.muted,
+                               anchor="w", font=(UI, 9))
+        self.status.pack(side="left", padx=(16, 0))
+        self._theme_btn = ttk.Button(head, text=gmtheme.label(),
+                                     command=self.app.cycle_theme)
+        self._theme_btn.pack(side="right")
+        ttk.Button(head, text="Refresh now", command=self.app.poll_now,
+                   style="Accent.TButton").pack(side="right", padx=(0, 8))
+        gmtheme.beam(self).pack(fill="x")
 
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=6, pady=(2, 6))
@@ -351,27 +401,30 @@ class Dashboard(tk.Toplevel):
         """Newest-first problem log. The per-machine cards answer 'what is
         wrong now'; this answers 'what changed, and when' - which is the
         question you actually have when a toast fired while you were away."""
-        outer = tk.Frame(self.nb, bg="white")
+        outer = tk.Frame(self.nb, bg=TH.bg)
         self.nb.add(outer, text="Problems")
-        self.problems = tk.Text(outer, wrap="none", bg="white", fg=INK,
-                                font=("Consolas", 8), relief="flat",
+        self.problems = tk.Text(outer, wrap="none", bg=TH.field, fg=TH.text,
+                                font=(MONO, 8), relief="flat",
+                                insertbackground=TH.text,
+                                selectbackground=TH.accent_soft,
+                                selectforeground=TH.text,
+                                highlightthickness=1,
+                                highlightbackground=TH.border,
                                 padx=6, pady=4)
         ys = ttk.Scrollbar(outer, orient="vertical", command=self.problems.yview)
         xs = ttk.Scrollbar(outer, orient="horizontal", command=self.problems.xview)
         self.problems.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
         ys.pack(side="right", fill="y"); xs.pack(side="bottom", fill="x")
         self.problems.pack(side="left", fill="both", expand=True)
-        for tag, col in (("crit", CRITICAL), ("warn", WARNING),
-                         ("ok", GOOD), ("dim", INK_MUTED)):
+        for tag, col in (("crit", TH.crit), ("warn", TH.warn),
+                         ("ok", TH.good), ("dim", TH.muted)):
             self.problems.tag_configure(tag, foreground=col)
 
     # ------------------------------------------------------------- this PC
-    SEV_TAG = {"CRIT": CRITICAL, "HIGH": SERIOUS, "WARN": WARNING,
-               "INFO": INK_MUTED, "OK": GOOD}
-    LCOLS = (("sev", "SEV", 46), ("dir", "DIR", 58), ("proto", "P", 36),
-             ("local", "LOCAL", 150), ("remote", "REMOTE", 160),
-             ("peer", "PEER", 110), ("proc", "PROCESS", 150),
-             ("pid", "PID", 52), ("acct", "SERVICE / PUBLISHER", 210),
+    LCOLS = (("sev", "SEV", 60), ("dir", "DIR", 76), ("proto", "P", 48),
+             ("local", "LOCAL", 170), ("remote", "REMOTE", 180),
+             ("peer", "PEER", 130), ("proc", "PROCESS", 170),
+             ("pid", "PID", 64), ("acct", "SERVICE / PUBLISHER", 220),
              ("why", "WHY IT IS LISTED", 420))
 
     def _make_thispc_tab(self):
@@ -382,40 +435,39 @@ class Dashboard(tk.Toplevel):
         selection, not thirteen objects each with its own dials. The detail
         pane underneath carries the copyable text, which is what a Treeview
         cannot give you and what ends up pasted into a ticket."""
-        outer = tk.Frame(self.nb, bg="white")
+        outer = tk.Frame(self.nb, bg=TH.bg)
         self.nb.add(outer, text="This PC")
         self.local_tab = outer
         self.lrows, self.lsnap = {}, None
 
-        self.lbanner = tk.Label(outer, bg="white", fg=INK_MUTED, anchor="w",
-                                font=("Segoe UI", 8), justify="left")
+        self.lbanner = tk.Label(outer, bg=TH.bg, fg=TH.muted, anchor="w",
+                                font=(UI, 8), justify="left")
         self.lbanner.pack(fill="x", padx=10, pady=(6, 0))
-        self.ltiles = tk.Frame(outer, bg="white")
+        self.ltiles = tk.Frame(outer, bg=TH.bg)
         self.ltiles.pack(fill="x", padx=8, pady=(4, 2))
 
-        ctl = tk.Frame(outer, bg="white"); ctl.pack(fill="x", padx=10, pady=(0, 4))
+        ctl = tk.Frame(outer, bg=TH.bg); ctl.pack(fill="x", padx=10, pady=(0, 4))
         self.lfilter = {}
         for key, label in (("IN", "inbound"), ("LISTEN", "listening"),
                            ("OUT", "outbound")):
             v = tk.BooleanVar(value=True)
             self.lfilter[key] = v
-            tk.Checkbutton(ctl, text=label, variable=v, bg="white", fg=INK,
-                           font=("Segoe UI", 8), command=self._rerender_local)\
-                .pack(side="left")
+            ttk.Checkbutton(ctl, text=label, variable=v,
+                            command=self._rerender_local).pack(side="left")
         self.lshowok = tk.BooleanVar(value=False)
-        tk.Checkbutton(ctl, text="show accounted-for", variable=self.lshowok,
-                       bg="white", fg=INK, font=("Segoe UI", 8),
-                       command=self._rerender_local).pack(side="left", padx=(12, 0))
-        tk.Button(ctl, text="Rescan", command=self.app.scan_local_now)\
+        ttk.Checkbutton(ctl, text="show accounted-for", variable=self.lshowok,
+                        command=self._rerender_local)\
+            .pack(side="left", padx=(12, 0))
+        ttk.Button(ctl, text="Rescan", command=self.app.scan_local_now)\
             .pack(side="right")
-        tk.Button(ctl, text="Scan as administrator",
+        ttk.Button(ctl, text="Scan as administrator",
                   command=self.app.scan_local_elevated).pack(side="right", padx=6)
-        tk.Button(ctl, text="Trust this program",
+        ttk.Button(ctl, text="Trust this program",
                   command=self._trust_selected).pack(side="right")
-        tk.Button(ctl, text="Copy all", command=self._copy_local)\
+        ttk.Button(ctl, text="Copy all", command=self._copy_local)\
             .pack(side="right", padx=6)
 
-        wrap = tk.Frame(outer, bg="white")
+        wrap = tk.Frame(outer, bg=TH.bg)
         wrap.pack(fill="both", expand=True, padx=10)
         self.ltree = ttk.Treeview(wrap, columns=[c[0] for c in self.LCOLS],
                                   show="headings", selectmode="browse")
@@ -429,13 +481,18 @@ class Dashboard(tk.Toplevel):
         self.ltree.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
         ys.pack(side="right", fill="y"); xs.pack(side="bottom", fill="x")
         self.ltree.pack(side="left", fill="both", expand=True)
-        for tag, col in self.SEV_TAG.items():
+        for tag, col in sev_colours().items():
             self.ltree.tag_configure(tag, foreground=col)
         self.ltree.bind("<<TreeviewSelect>>", self._show_local_detail)
         self.lsort = ("sev", False)
 
-        self.ldetail = tk.Text(outer, height=8, wrap="word", bg="#fbfbfb",
-                               fg=INK, font=("Consolas", 8), relief="flat",
+        self.ldetail = tk.Text(outer, height=8, wrap="word", bg=TH.field,
+                               fg=TH.text, font=(MONO, 8), relief="flat",
+                               insertbackground=TH.text,
+                               selectbackground=TH.accent_soft,
+                               selectforeground=TH.text,
+                               highlightthickness=1,
+                               highlightbackground=TH.border,
                                padx=8, pady=5)
         self.ldetail.pack(fill="x", padx=10, pady=(4, 8))
         self.ldetail.insert("1.0", "Select a row to see the full process, "
@@ -473,7 +530,7 @@ class Dashboard(tk.Toplevel):
             # and "we could not look" are opposite answers that would
             # otherwise render identically.
             self.lbanner.config(
-                fg=CRITICAL,
+                fg=TH.crit,
                 text="SCAN FAILED - this list is NOT an all-clear.\n"
                      + str(lsnap.get("error", ""))[:300])
         else:
@@ -489,7 +546,7 @@ class Dashboard(tk.Toplevel):
             if lsnap.get("deferred"):
                 bits.append(f"{lsnap['deferred']} signature(s) still to check")
             self.lbanner.config(
-                fg=(INK_MUTED if lsnap.get("admin") else WARNING),
+                fg=(TH.muted if lsnap.get("admin") else TH.warn),
                 text="   ".join(bits))
 
         for w in self.ltiles.winfo_children():
@@ -499,27 +556,17 @@ class Dashboard(tk.Toplevel):
         # colour cannot be derived from the count alone.
         tiles = [
             ("EXPOSED", c.get("exposed", 0),
-             "unidentified, reachable from off this PC", CRITICAL),
-            ("INBOUND", c.get("unknown_in", 0), "unidentified sessions IN", CRITICAL),
-            ("OUTBOUND", c.get("unknown_out", 0), "unidentified calls OUT", WARNING),
-            ("UNVERIFIED", c.get("unverified", 0), "process not identifiable", WARNING),
-            ("FOR REVIEW", c.get("review", 0), "signed, but not a service", INK_MUTED),
-            ("ACCOUNTED", c.get("accounted", 0), "system services + trusted", GOOD),
+             "unidentified, reachable from off this PC", TH.crit),
+            ("INBOUND", c.get("unknown_in", 0), "unidentified sessions IN", TH.crit),
+            ("OUTBOUND", c.get("unknown_out", 0), "unidentified calls OUT", TH.warn),
+            ("UNVERIFIED", c.get("unverified", 0), "process not identifiable", TH.warn),
+            ("FOR REVIEW", c.get("review", 0), "signed, but not a service", TH.muted),
+            ("ACCOUNTED", c.get("accounted", 0), "system services + trusted", TH.good),
         ]
         for label, val, note, hot in tiles:
-            col = hot if (val or label in ("FOR REVIEW", "ACCOUNTED")) else GOOD
-            t = tk.Frame(self.ltiles, bg="white", highlightthickness=1,
-                         highlightbackground="#e3e3e3")
-            t.pack(side="left", padx=(0, 8))
-            tk.Frame(t, bg=col, width=5).pack(side="left", fill="y")
-            inner = tk.Frame(t, bg="white")
-            inner.pack(side="left", padx=10, pady=5)
-            tk.Label(inner, text=label, bg="white", fg=INK_MUTED,
-                     font=("Segoe UI", 7)).pack(anchor="w")
-            tk.Label(inner, text=str(val), bg="white", fg=INK,
-                     font=("Segoe UI", 14, "bold")).pack(anchor="w")
-            tk.Label(inner, text=note, bg="white", fg=INK_MUTED,
-                     font=("Segoe UI", 7)).pack(anchor="w")
+            col = hot if (val or label in ("FOR REVIEW", "ACCOUNTED")) else TH.good
+            gmtheme.tile(self.ltiles, label, val, note, col)\
+                .pack(side="left", padx=(0, 8))
 
         keep = self.ltree.selection()
         keep = keep[0] if keep else None
@@ -602,10 +649,10 @@ class Dashboard(tk.Toplevel):
         log.info("local: copied %d row(s) to clipboard", len(rows))
 
     # --------------------------------------------------------- connections
-    CCOLS = (("dir", "DIR", 52), ("proto", "P", 34), ("proc", "PROGRAM", 140),
-             ("pid", "PID", 52), ("remote", "REMOTE", 155),
-             ("host", "RESOLVED", 190), ("port", "SERVICE", 105),
-             ("peer", "PEER", 90), ("age", "AGE", 52),
+    CCOLS = (("dir", "DIR", 70), ("proto", "P", 48), ("proc", "PROGRAM", 160),
+             ("pid", "PID", 64), ("remote", "REMOTE", 175),
+             ("host", "RESOLVED", 200), ("port", "SERVICE", 125),
+             ("peer", "PEER", 110), ("age", "AGE", 64),
              ("verdict", "ACCOUNTED BY", 260))
 
     def _make_conns_tab(self):
@@ -615,42 +662,41 @@ class Dashboard(tk.Toplevel):
         "what is my machine actually talking to right now" - a different
         question, and one whose answer is mostly benign and therefore belongs
         somewhere that is not an alarm panel."""
-        outer = tk.Frame(self.nb, bg="white")
+        outer = tk.Frame(self.nb, bg=TH.bg)
         self.nb.add(outer, text="Connections")
         self.conns_tab = outer
         self.crows = {}
 
-        self.cbanner = tk.Label(outer, bg="white", fg=INK_MUTED, anchor="w",
-                                font=("Segoe UI", 8))
+        self.cbanner = tk.Label(outer, bg=TH.bg, fg=TH.muted, anchor="w",
+                                font=(UI, 8))
         self.cbanner.pack(fill="x", padx=10, pady=(6, 0))
-        self.ctiles = tk.Frame(outer, bg="white")
+        self.ctiles = tk.Frame(outer, bg=TH.bg)
         self.ctiles.pack(fill="x", padx=8, pady=(4, 2))
-        self.ccharts = tk.Canvas(outer, bg="white", highlightthickness=0,
+        self.ccharts = tk.Canvas(outer, bg=TH.bg, highlightthickness=0,
                                  height=190)
         self.ccharts.pack(fill="x", padx=10)
         self.ccharts.bind("<Configure>", lambda _e: self._draw_charts())
 
-        ctl = tk.Frame(outer, bg="white"); ctl.pack(fill="x", padx=10, pady=(2, 4))
-        tk.Label(ctl, text="peers:", bg="white", fg=INK_MUTED,
-                 font=("Segoe UI", 8)).pack(side="left")
+        ctl = tk.Frame(outer, bg=TH.bg); ctl.pack(fill="x", padx=10, pady=(2, 4))
+        tk.Label(ctl, text="peers:", bg=TH.bg, fg=TH.muted,
+                 font=(UI, 8)).pack(side="left")
         self.cfilter = {}
         for key, label in (("public", "public"), ("lan", "LAN"),
                            ("loopback", "loopback")):
             v = tk.BooleanVar(value=True)
             self.cfilter[key] = v
-            tk.Checkbutton(ctl, text=label, variable=v, bg="white", fg=INK,
-                           font=("Segoe UI", 8), command=self._rerender_conns)\
-                .pack(side="left")
+            ttk.Checkbutton(ctl, text=label, variable=v,
+                            command=self._rerender_conns).pack(side="left")
         self.chide_trusted = tk.BooleanVar(value=False)
-        tk.Checkbutton(ctl, text="hide trusted", variable=self.chide_trusted,
-                       bg="white", fg=INK, font=("Segoe UI", 8),
-                       command=self._rerender_conns).pack(side="left", padx=(12, 0))
-        tk.Button(ctl, text="Rescan", command=self.app.scan_local_now)\
+        ttk.Checkbutton(ctl, text="hide trusted", variable=self.chide_trusted,
+                        command=self._rerender_conns)\
+            .pack(side="left", padx=(12, 0))
+        ttk.Button(ctl, text="Rescan", command=self.app.scan_local_now)\
             .pack(side="right")
-        tk.Button(ctl, text="Copy all", command=self._copy_conns)\
+        ttk.Button(ctl, text="Copy all", command=self._copy_conns)\
             .pack(side="right", padx=6)
 
-        wrap = tk.Frame(outer, bg="white")
+        wrap = tk.Frame(outer, bg=TH.bg)
         wrap.pack(fill="both", expand=True, padx=10)
         self.ctree = ttk.Treeview(wrap, columns=[c[0] for c in self.CCOLS],
                                   show="headings", selectmode="browse")
@@ -664,13 +710,18 @@ class Dashboard(tk.Toplevel):
         self.ctree.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
         ys.pack(side="right", fill="y"); xs.pack(side="bottom", fill="x")
         self.ctree.pack(side="left", fill="both", expand=True)
-        for tag, col in self.SEV_TAG.items():
+        for tag, col in sev_colours().items():
             self.ctree.tag_configure(tag, foreground=col)
         self.ctree.bind("<<TreeviewSelect>>", self._show_conn_detail)
         self.csort = ("age", False)
 
-        self.cdetail = tk.Text(outer, height=6, wrap="word", bg="#fbfbfb",
-                               fg=INK, font=("Consolas", 8), relief="flat",
+        self.cdetail = tk.Text(outer, height=6, wrap="word", bg=TH.field,
+                               fg=TH.text, font=(MONO, 8), relief="flat",
+                               insertbackground=TH.text,
+                               selectbackground=TH.accent_soft,
+                               selectforeground=TH.text,
+                               highlightthickness=1,
+                               highlightbackground=TH.border,
                                padx=8, pady=5)
         self.cdetail.pack(fill="x", padx=10, pady=(4, 8))
 
@@ -730,12 +781,12 @@ class Dashboard(tk.Toplevel):
         st = gmlocal.connection_stats(rows, now)
         self.cstats = st
         if not lsnap.get("ok"):
-            self.cbanner.config(fg=CRITICAL,
+            self.cbanner.config(fg=TH.crit,
                                 text="SCAN FAILED - this list is incomplete. "
                                      + str(lsnap.get("error", ""))[:240])
         else:
             self.cbanner.config(
-                fg=INK_MUTED,
+                fg=TH.muted,
                 text="Established sessions whose owner is NOT a registered "
                      "system service - listeners excluded.   "
                      f"scanned {time.strftime('%H:%M:%S', time.localtime(lsnap['checked_at']))}"
@@ -755,20 +806,11 @@ class Dashboard(tk.Toplevel):
              "longest-lived session"),
         ]
         for label, val, note in tiles:
-            t = tk.Frame(self.ctiles, bg="white", highlightthickness=1,
-                         highlightbackground="#e3e3e3")
-            t.pack(side="left", padx=(0, 8))
-            # The accent bar is the same single series colour as the charts,
+            # The accent edge is the same single series colour as the charts,
             # not a status colour: none of these numbers is a fault, and a red
             # or amber edge would make a busy browser look like an incident.
-            tk.Frame(t, bg=SERIES, width=5).pack(side="left", fill="y")
-            inner = tk.Frame(t, bg="white"); inner.pack(side="left", padx=10, pady=5)
-            tk.Label(inner, text=label, bg="white", fg=INK_MUTED,
-                     font=("Segoe UI", 7)).pack(anchor="w")
-            tk.Label(inner, text=val, bg="white", fg=INK,
-                     font=("Segoe UI", 14, "bold")).pack(anchor="w")
-            tk.Label(inner, text=note, bg="white", fg=INK_MUTED,
-                     font=("Segoe UI", 7)).pack(anchor="w")
+            gmtheme.tile(self.ctiles, label, val, note, TH.series)\
+                .pack(side="left", padx=(0, 8))
         self._draw_charts()
 
         keep = self.ctree.selection()
@@ -814,14 +856,10 @@ class Dashboard(tk.Toplevel):
         self.clipboard_append(head + "\n" + body)
 
     # ------------------------------------------------------------- stealth
-    SCOLS = (("sev", "SEV", 46), ("port", "PORT", 58), ("state", "STATE", 88),
-             ("name", "SERVICE", 130), ("bind", "BOUND HERE", 120),
-             ("svc", "WINDOWS SERVICE", 150), ("source", "WHY PROBED", 165),
-             ("ms", "MS", 52), ("note", "WHAT IT MEANS", 420))
-
-    STATE_TAG = {"open": CRITICAL, "closed": WARNING, "stealth": GOOD,
-                 "unreachable": INK_MUTED, "blocked": INK_MUTED,
-                 "error": INK_MUTED}
+    SCOLS = (("sev", "SEV", 60), ("port", "PORT", 70), ("state", "STATE", 100),
+             ("name", "SERVICE", 140), ("bind", "BOUND HERE", 130),
+             ("svc", "WINDOWS SERVICE", 160), ("source", "WHY PROBED", 175),
+             ("ms", "MS", 64), ("note", "WHAT IT MEANS", 420))
 
     def _make_stealth_tab(self):
         """Is a given address invisible from outside, or does it answer?
@@ -832,35 +870,35 @@ class Dashboard(tk.Toplevel):
         of it - and this fleet already has a gateway that drops port 22 for ten
         minutes when it sees a burst. A check with that cost does not get to
         fire on a timer without somebody asking for it."""
-        outer = tk.Frame(self.nb, bg="white")
+        outer = tk.Frame(self.nb, bg=TH.bg)
         self.nb.add(outer, text="Stealth")
         self.stealth_tab = outer
         self.srows, self.ssnap = {}, None
         self.sbusy = False
 
-        self.sbanner = tk.Label(outer, bg="white", fg=INK_MUTED, anchor="w",
-                                font=("Segoe UI", 9), justify="left")
+        self.sbanner = tk.Label(outer, bg=TH.bg, fg=TH.muted, anchor="w",
+                                font=(UI, 9), justify="left")
         self.sbanner.pack(fill="x", padx=10, pady=(6, 0))
-        self.scaveat = tk.Label(outer, bg="white", fg=INK_MUTED, anchor="w",
-                                font=("Segoe UI", 8), justify="left",
+        self.scaveat = tk.Label(outer, bg=TH.bg, fg=TH.muted, anchor="w",
+                                font=(UI, 8), justify="left",
                                 wraplength=1340)
         self.scaveat.pack(fill="x", padx=10, pady=(2, 0))
-        self.stiles = tk.Frame(outer, bg="white")
+        self.stiles = tk.Frame(outer, bg=TH.bg)
         self.stiles.pack(fill="x", padx=8, pady=(4, 2))
 
-        ctl = tk.Frame(outer, bg="white"); ctl.pack(fill="x", padx=10, pady=(2, 4))
-        tk.Label(ctl, text="target:", bg="white", fg=INK_MUTED,
-                 font=("Segoe UI", 8)).pack(side="left")
+        ctl = tk.Frame(outer, bg=TH.bg); ctl.pack(fill="x", padx=10, pady=(2, 4))
+        tk.Label(ctl, text="target:", bg=TH.bg, fg=TH.muted,
+                 font=(UI, 8)).pack(side="left")
         self.starget = tk.StringVar()
-        e = tk.Entry(ctl, textvariable=self.starget, width=24,
-                     font=("Segoe UI", 9))
+        e = ttk.Entry(ctl, textvariable=self.starget, width=24,
+                      font=(UI, 9))
         e.pack(side="left", padx=(4, 4))
         e.bind("<Return>", lambda _ev: self._run_stealth())
-        tk.Button(ctl, text="my public IP",
+        ttk.Button(ctl, text="my public IP",
                   command=self._fill_public_ip).pack(side="left")
 
-        tk.Label(ctl, text="  from:", bg="white", fg=INK_MUTED,
-                 font=("Segoe UI", 8)).pack(side="left")
+        tk.Label(ctl, text="  from:", bg=TH.bg, fg=TH.muted,
+                 font=(UI, 8)).pack(side="left")
         # "auto" is the default and the honest one: the right vantage depends
         # on the target, and a fixed relay silently produces a wrong answer for
         # half the addresses you might type.
@@ -874,27 +912,27 @@ class Dashboard(tk.Toplevel):
         # the one that can get this laptop dropped by the gateway, so the
         # choice sits next to the button that fires it, with the cost of each
         # spelled out beside it rather than in documentation nobody opens.
-        tk.Label(ctl, text="  sweep:", bg="white", fg=INK_MUTED,
-                 font=("Segoe UI", 8)).pack(side="left")
+        tk.Label(ctl, text="  sweep:", bg=TH.bg, fg=TH.muted,
+                 font=(UI, 8)).pack(side="left")
         self.smode = tk.StringVar(value=gmstealth.DEFAULT_MODE)
         for key in ("fast", "gentle"):
-            tk.Radiobutton(ctl, text=key, variable=self.smode, value=key,
-                           bg="white", fg=INK, font=("Segoe UI", 8),
-                           command=self._mode_hint).pack(side="left")
+            ttk.Radiobutton(ctl, text=key, variable=self.smode, value=key,
+                            command=self._mode_hint).pack(side="left")
 
         self.sshowall = tk.BooleanVar(value=False)
-        tk.Checkbutton(ctl, text="show stealthed ports too",
-                       variable=self.sshowall, bg="white", fg=INK,
-                       font=("Segoe UI", 8),
-                       command=self._rerender_stealth).pack(side="left", padx=(12, 0))
+        ttk.Checkbutton(ctl, text="show stealthed ports too",
+                        variable=self.sshowall,
+                        command=self._rerender_stealth)\
+            .pack(side="left", padx=(12, 0))
 
-        self.srunbtn = tk.Button(ctl, text="Run stealth check",
-                                 command=self._run_stealth)
+        self.srunbtn = ttk.Button(ctl, text="Run stealth check",
+                                  style="Accent.TButton",
+                                  command=self._run_stealth)
         self.srunbtn.pack(side="right")
-        tk.Button(ctl, text="Copy all", command=self._copy_stealth)\
+        ttk.Button(ctl, text="Copy all", command=self._copy_stealth)\
             .pack(side="right", padx=6)
 
-        wrap = tk.Frame(outer, bg="white")
+        wrap = tk.Frame(outer, bg=TH.bg)
         wrap.pack(fill="both", expand=True, padx=10)
         self.stree = ttk.Treeview(wrap, columns=[c[0] for c in self.SCOLS],
                                   show="headings", selectmode="browse")
@@ -908,13 +946,18 @@ class Dashboard(tk.Toplevel):
         self.stree.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
         ys.pack(side="right", fill="y"); xs.pack(side="bottom", fill="x")
         self.stree.pack(side="left", fill="both", expand=True)
-        for tag, col in self.SEV_TAG.items():
+        for tag, col in sev_colours().items():
             self.stree.tag_configure(tag, foreground=col)
         self.stree.bind("<<TreeviewSelect>>", self._show_stealth_detail)
         self.ssort = ("sev", False)
 
-        self.sdetail = tk.Text(outer, height=7, wrap="word", bg="#fbfbfb",
-                               fg=INK, font=("Consolas", 8), relief="flat",
+        self.sdetail = tk.Text(outer, height=7, wrap="word", bg=TH.field,
+                               fg=TH.text, font=(MONO, 8), relief="flat",
+                               insertbackground=TH.text,
+                               selectbackground=TH.accent_soft,
+                               selectforeground=TH.text,
+                               highlightthickness=1,
+                               highlightbackground=TH.border,
                                padx=8, pady=5)
         self.sdetail.pack(fill="x", padx=10, pady=(4, 8))
         self.sdetail.insert("1.0", STEALTH_HELP)
@@ -932,7 +975,7 @@ class Dashboard(tk.Toplevel):
         n = len(gmstealth.port_plan(self.app.lsnap))
         secs = gmstealth.estimate_seconds(n, mode)
         self.scaveat.config(
-            fg=INK_MUTED,
+            fg=TH.muted,
             text=f"{n} ports to sweep - {gmstealth.SWEEP_MODES[mode]['label']}."
                  f"  Up to about {secs}s against a fully stealthed target.")
 
@@ -945,7 +988,7 @@ class Dashboard(tk.Toplevel):
             self.after(0, lambda: self.starget.set(ip or ""))
             if not ip:
                 self.after(0, lambda: self.sbanner.config(
-                    fg=WARNING, text="Could not determine this machine's public "
+                    fg=TH.warn, text="Could not determine this machine's public "
                                      "IP - offline, or every lookup service is "
                                      "unreachable."))
         threading.Thread(target=work, daemon=True, name="pubip").start()
@@ -965,7 +1008,7 @@ class Dashboard(tk.Toplevel):
         self.sbusy = True
         self.srunbtn.config(state="disabled", text="Scanning...")
         self.sbanner.config(
-            fg=INK_MUTED,
+            fg=TH.muted,
             text=f"Sweeping {target} ({mode}) - {n} ports: the privileged "
                  f"range, common services, and every port this PC listens on."
                  f"  Up to about {gmstealth.estimate_seconds(n, mode)}s.")
@@ -1001,7 +1044,7 @@ class Dashboard(tk.Toplevel):
             # A sweep that did not run must never render like a clean one. No
             # tiles, no rows, and the reason in place of the verdict.
             self.sbanner.config(
-                fg=CRITICAL,
+                fg=TH.crit,
                 text="STEALTH CHECK DID NOT RUN - this is NOT an all-clear.\n"
                      + str(ssnap.get("error", ""))[:300])
             self.scaveat.config(text="")
@@ -1012,12 +1055,12 @@ class Dashboard(tk.Toplevel):
             self.nb.tab(self.stealth_tab, text="Stealth  (failed)")
             return
 
-        col = {"EXPOSED": CRITICAL, "NOT STEALTH": WARNING,
-               "UNCONFIRMED": SERIOUS, "STEALTH": GOOD,
+        col = {"EXPOSED": TH.crit, "NOT STEALTH": TH.warn,
+               "UNCONFIRMED": TH.serious, "STEALTH": TH.good,
                # Not a status colour: a self-probe is neither a pass nor a
                # fault, and giving it one would make a no-op look like a
                # result.
-               "SELF-PROBE": INK_MUTED}.get(ssnap["verdict"], INK_MUTED)
+               "SELF-PROBE": TH.muted}.get(ssnap["verdict"], TH.muted)
         self.sbanner.config(
             fg=col,
             text=f"{ssnap['verdict']} - {ssnap['verdict_note']}\n"
@@ -1034,7 +1077,7 @@ class Dashboard(tk.Toplevel):
         # line must not skim past it. With nothing to qualify, the slot goes
         # back to telling you what the next sweep will cost.
         if ssnap.get("caveat"):
-            self.scaveat.config(fg=SERIOUS, text=ssnap["caveat"])
+            self.scaveat.config(fg=TH.serious, text=ssnap["caveat"])
         else:
             self._mode_hint()
 
@@ -1046,37 +1089,28 @@ class Dashboard(tk.Toplevel):
         # cannot inherit the "non-zero means trouble" rule the others use.
         tiles = [
             ("OPEN", str(c.get("open", 0)), "answered a handshake",
-             CRITICAL if c.get("open") else GOOD),
+             TH.crit if c.get("open") else TH.good),
             ("REACHABLE HERE", str(c.get("listeners_open", 0)),
              "our own listeners, from outside",
-             CRITICAL if c.get("listeners_open") else GOOD),
+             TH.crit if c.get("listeners_open") else TH.good),
             ("CLOSED", str(c.get("closed", 0)), "RST - host reveals itself",
-             WARNING if c.get("closed") else GOOD),
+             TH.warn if c.get("closed") else TH.good),
             ("STEALTH", str(c.get("stealth", 0)),
-             f"{c.get('stealth_pct', 0)}% dropped silently", GOOD),
+             f"{c.get('stealth_pct', 0)}% dropped silently", TH.good),
             # Whether the target proved it exists at all. Without this, a
             # sweep of a switched-off machine renders identically to a
             # perfectly stealthed one - 100% stealth, nothing open - and the
             # tile is the only thing on screen that tells them apart.
             ("HOST IS UP", "yes" if alive else "unproven",
-             "ARP/ICMP - is the silence real?", GOOD if alive else SERIOUS),
+             "ARP/ICMP - is the silence real?", TH.good if alive else TH.serious),
             ("UNTESTED", str(c.get("untested", 0)), "no conclusive answer",
-             WARNING if c.get("untested") else GOOD),
+             TH.warn if c.get("untested") else TH.good),
             ("OUR PORTS", str(c.get("listeners", 0)),
-             f"{c.get('privileged', 0)} privileged also swept", INK_MUTED),
+             f"{c.get('privileged', 0)} privileged also swept", TH.muted),
         ]
         for label, val, note, accent in tiles:
-            t = tk.Frame(self.stiles, bg="white", highlightthickness=1,
-                         highlightbackground="#e3e3e3")
-            t.pack(side="left", padx=(0, 8))
-            tk.Frame(t, bg=accent, width=5).pack(side="left", fill="y")
-            inner = tk.Frame(t, bg="white"); inner.pack(side="left", padx=10, pady=5)
-            tk.Label(inner, text=label, bg="white", fg=INK_MUTED,
-                     font=("Segoe UI", 7)).pack(anchor="w")
-            tk.Label(inner, text=val, bg="white", fg=INK,
-                     font=("Segoe UI", 14, "bold")).pack(anchor="w")
-            tk.Label(inner, text=note, bg="white", fg=INK_MUTED,
-                     font=("Segoe UI", 7)).pack(anchor="w")
+            gmtheme.tile(self.stiles, label, val, note, accent)\
+                .pack(side="left", padx=(0, 8))
 
         keep = self.stree.selection()
         keep = keep[0] if keep else None
@@ -1143,14 +1177,22 @@ class Dashboard(tk.Toplevel):
     def _make_tab(self, label):
         """A tab holding its own independently scrolling canvas, so scrolling
         one fleet does not move the other."""
-        outer = tk.Frame(self.nb, bg="white")
+        outer = tk.Frame(self.nb, bg=TH.bg)
         self.nb.add(outer, text=label)
-        cv = tk.Canvas(outer, bg="white", highlightthickness=0)
+        cv = tk.Canvas(outer, bg=TH.bg, highlightthickness=0)
         sb = ttk.Scrollbar(outer, orient="vertical", command=cv.yview)
-        inner = tk.Frame(cv, bg="white")
+        inner = tk.Frame(cv, bg=TH.bg)
         inner.bind("<Configure>",
                    lambda e, c=cv: c.configure(scrollregion=c.bbox("all")))
-        cv.create_window((0, 0), window=inner, anchor="nw")
+        win = cv.create_window((0, 0), window=inner, anchor="nw")
+        # Pin the scrolled frame to the canvas WIDTH. Without this it keeps its
+        # natural width, so the card grid sizes its columns from the widest
+        # problem string rather than from the window - and the machines in
+        # columns 2 and 3 end up drawn past the right edge, invisible. A
+        # monitor that hides a machine is the one failure it cannot have.
+        cv.bind("<Configure>",
+                lambda e, c=cv, w=win: c.itemconfigure(w, width=e.width),
+                add="+")
         cv.configure(yscrollcommand=sb.set)
         cv.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
@@ -1169,7 +1211,8 @@ class Dashboard(tk.Toplevel):
             for w in p["inner"].winfo_children():
                 w.destroy()
         if not snap:
-            tk.Label(self.panes["local"]["inner"], bg="white",
+            tk.Label(self.panes["local"]["inner"], bg=TH.bg, fg=TH.muted,
+                     font=(UI, 9),
                      text="No data yet - first poll in progress.").pack(pady=30)
             return
         gate = ("ON-NETWORK" if snap["gate_ok"] else "OFF-NETWORK")
@@ -1177,7 +1220,7 @@ class Dashboard(tk.Toplevel):
             text=f"{gate} ({snap['gate_note']}, via {snap['gate_id']})   "
                  f"checked {time.strftime('%H:%M:%S', time.localtime(snap['checked_at']))}"
                  f" in {snap['elapsed']}s",
-            fg=INK)
+            fg=TH.muted)
         if not snap["machines"]:
             # An empty fleet polls in 0.0s and reports nothing wrong, which
             # looks exactly like a healthy one. Say what is actually going on,
@@ -1185,14 +1228,14 @@ class Dashboard(tk.Toplevel):
             # running a copy of the exe from a folder that has no config.
             missing = not gmconfig.exists()
             self.status.config(
-                fg=CRITICAL,
+                fg=TH.crit,
                 text=("NO CONFIGURATION - machines.json was not found. "
                       if missing else "No machines configured yet. ")
                      + f"Infra Monitor is reading from {gmpaths.APP_DIR}")
             for key in ("local", "dc"):
                 tk.Label(
-                    self.panes[key]["inner"], bg="white", fg=INK, justify="left",
-                    font=("Segoe UI", 10), padx=20, pady=24,
+                    self.panes[key]["inner"], bg=TH.bg, fg=TH.text, justify="left",
+                    font=(UI, 10), padx=20, pady=24,
                     text=("machines.json was not found.\n\n"
                           if missing else
                           "No machines configured yet.\n\n")
@@ -1223,10 +1266,10 @@ class Dashboard(tk.Toplevel):
                         else f"{label}  (ok)")
             if not group:
                 tk.Label(pane["inner"], text="No machines in this fleet.",
-                         bg="white", fg=INK_MUTED).pack(pady=30)
+                         bg=TH.bg, fg=TH.muted).pack(pady=30)
                 continue
-            tk.Label(pane["inner"], text=note, bg="white", fg=INK_MUTED,
-                     font=("Segoe UI", 8)).grid(row=0, column=0, columnspan=self._ncols(), sticky="w", padx=10, pady=(6, 0))
+            tk.Label(pane["inner"], text=note, bg=TH.bg, fg=TH.muted,
+                     font=(UI, 8)).grid(row=0, column=0, columnspan=self._ncols(), sticky="w", padx=10, pady=(6, 0))
             self._fleet_tiles(pane["inner"], group)
             self._cards(pane["inner"], group, 2)
         self.render_problems(getattr(self.app, "problem_log", []))
@@ -1261,11 +1304,11 @@ class Dashboard(tk.Toplevel):
         machine that owns it named underneath, so the tile is actionable
         instead of merely tidy."""
         live = [r for r in group if r.get("checked") and r["up"]]
-        bar = tk.Frame(parent, bg="white")
+        bar = tk.Frame(parent, bg=TH.bg)
         bar.grid(row=1, column=0, columnspan=self._ncols(), sticky="ew", padx=8, pady=(6, 2))
         if not live:
-            tk.Label(bar, text="No machines reachable.", bg="white",
-                     fg=INK_MUTED, font=("Segoe UI", 9)).pack(anchor="w")
+            tk.Label(bar, text="No machines reachable.", bg=TH.bg,
+                     fg=TH.muted, font=(UI, 9)).pack(anchor="w")
             return
 
         def peak(key):
@@ -1284,20 +1327,8 @@ class Dashboard(tk.Toplevel):
                  ("DISK", *peak("disk")), ("GPU", *gpu_peak())]
         for label, val, who in tiles:
             col, word = severity(val)
-            t = tk.Frame(bar, bg="white", highlightthickness=1,
-                         highlightbackground="#e3e3e3")
-            t.pack(side="left", padx=(0, 8))
-            tk.Frame(t, bg=col, width=5).pack(side="left", fill="y")
-            inner = tk.Frame(t, bg="white"); inner.pack(side="left", padx=10, pady=6)
-            tk.Label(inner, text=f"PEAK {label}", bg="white", fg=INK_MUTED,
-                     font=("Segoe UI", 7)).pack(anchor="w")
-            line = tk.Frame(inner, bg="white"); line.pack(anchor="w")
-            tk.Label(line, text=f"{int(val)}%", bg="white", fg=INK,
-                     font=("Segoe UI", 14, "bold")).pack(side="left")
-            tk.Label(line, text=f"  {word}", bg="white", fg=INK,
-                     font=("Segoe UI", 8, "bold")).pack(side="left", pady=(6, 0))
-            tk.Label(inner, text=who, bg="white", fg=INK_MUTED,
-                     font=("Segoe UI", 7)).pack(anchor="w")
+            gmtheme.tile(bar, f"PEAK {label}", f"{int(val)}%", who, col,
+                         word=word).pack(side="left", padx=(0, 8))
 
     CARD_MIN_PX = 430          # widest real card: name + addr + 7 dials
 
@@ -1318,20 +1349,21 @@ class Dashboard(tk.Toplevel):
         for i, r in enumerate(group):
             m = r["metrics"]
             if not r.get("checked"):
-                bar = GREY
+                bar = TH.grey
             elif not r["up"]:
-                bar = RED
+                bar = TH.crit
             elif r["problems"]:
-                bar = RED if any("FOREIGN" in p for p in r["problems"]) else AMBER
+                bar = (TH.crit if any("FOREIGN" in p for p in r["problems"])
+                       else TH.warn)
             else:
-                bar = GREEN
+                bar = TH.good
 
             # ONE machine per full-width row. Two narrow columns forced every
             # problem string to be truncated at ~150 chars; a single wide row
             # gives the text the horizontal space it needs, and makes the fleet
             # scan as a list rather than a grid.
-            card = tk.Frame(parent, bg="white", highlightthickness=1,
-                            highlightbackground="#e8e8e8")
+            card = tk.Frame(parent, bg=TH.surface, highlightthickness=1,
+                            highlightbackground=TH.border)
             nc = self._ncols()
             card.grid(row=base_row + i // nc, column=i % nc,
                       padx=3, pady=1, sticky="ew")
@@ -1339,22 +1371,22 @@ class Dashboard(tk.Toplevel):
                 parent.grid_columnconfigure(c, weight=1, uniform="cards")
             tk.Frame(card, bg=bar, width=4).pack(side="left", fill="y")
 
-            body = tk.Frame(card, bg="white")
+            body = tk.Frame(card, bg=TH.surface)
             body.pack(side="left", fill="both", expand=True, padx=4, pady=1)
 
             # Name, address, dials and status all on ONE line. Vertical space
             # is the scarce axis when 13 machines should fit without scrolling;
             # horizontal space is free.
-            row0 = tk.Frame(body, bg="white"); row0.pack(fill="x")
-            tk.Label(row0, text=r["name"], bg="white", fg=INK, width=7,
-                     anchor="w", font=("Segoe UI", 9, "bold")).pack(side="left")
+            row0 = tk.Frame(body, bg=TH.surface); row0.pack(fill="x")
+            tk.Label(row0, text=r["name"], bg=TH.surface, fg=TH.text, width=7,
+                     anchor="w", font=(UI, 9, "bold")).pack(side="left")
             copyable(row0, r["ip"] or r.get("alias", ""), width=16,
-                     fg=INK_MUTED, font=("Consolas", 8)).pack(side="left")
+                     fg=TH.muted, font=(MONO, 8)).pack(side="left")
 
             gpus = m.get("gpus", [])
             if r.get("checked") and r["up"]:
                 n = 3 + min(len(gpus), 4)
-                cv = tk.Canvas(body, bg="white", height=56, width=n * 58,
+                cv = tk.Canvas(body, bg=TH.surface, height=56, width=n * 58,
                                highlightthickness=0)
                 cv.pack(side="left", anchor="w")
                 draw_dial(cv, 26, 22, 16, m.get("cpu", 0), "CPU")
@@ -1370,25 +1402,26 @@ class Dashboard(tk.Toplevel):
                 extra = ("  +%d more" % (len(gpus) - 4)) if len(gpus) > 4 else ""
                 gtxt = ("%dx %s%s" % (len(gpus), gpus[0]["name"], extra)
                         if gpus else m.get("nvidia", "no GPU"))
-                lb = tk.Label(row0, text="  " + gtxt[:32], bg="white",
-                              fg=INK_MUTED, font=("Segoe UI", 8))
+                lb = tk.Label(row0, text="  " + gtxt[:32], bg=TH.surface,
+                              fg=TH.muted, font=(UI, 8))
                 lb.pack(side="left")
                 Tooltip(lb, gtxt)
                 qp = m.get("quickpod", "-")
-                q = tk.Label(row0, text="  qp:" + qp.split(":")[-1][:8], bg="white", fg=INK_MUTED, font=("Segoe UI", 8))
+                q = tk.Label(row0, text="  qp:" + qp.split(":")[-1][:8],
+                             bg=TH.surface, fg=TH.muted, font=(UI, 8))
                 q.pack(side="left")
                 Tooltip(q, "quickpod: " + qp)
             else:
                 note = r.get("note") or "; ".join(r["problems"]) or "unreachable"
-                e = copyable(row0, note[:100], fg=INK_MUTED,
-                             font=("Segoe UI", 8), width=100)
+                e = copyable(row0, note[:100], fg=TH.muted,
+                             font=(UI, 8), width=40)
                 e.pack(side="left", fill="x", expand=True)
                 Tooltip(e, note)
 
             if r["problems"]:
                 full = "  |  ".join(r["problems"])
                 pe = copyable(body, "! " + full, fg=bar,
-                              font=("Segoe UI", 8), width=200)
+                              font=(UI, 8), width=40)
                 pe.pack(fill="x")
                 # Full text on hover: the tail of a problem string is usually
                 # the actionable half, and it is exactly what gets cut off.
@@ -1409,28 +1442,33 @@ class Settings(tk.Toplevel):
         super().__init__(master)
         self.app = app
         self.title("Infra Monitor - Settings")
-        self.geometry("720x520")
-        self.configure(bg="white")
+        # Wider than the original 720: the Aura type scale is a step up from
+        # the 8pt this window was laid out for, and at 720 the button row ran
+        # off the edge with Cancel past the frame.
+        self.geometry("900x560")
+        self.minsize(820, 480)
+        self.configure(bg=TH.bg)
         self.rows = {}
 
-        tk.Label(self, bg="white", fg=INK_MUTED, justify="left", anchor="w",
-                 font=("Segoe UI", 9), padx=10, pady=5, wraplength=690,
+        tk.Label(self, bg=TH.bg, fg=TH.muted, justify="left", anchor="w",
+                 font=(UI, 9), padx=10, pady=5, wraplength=860,
                  text="Turn a check off for machines it does not apply to - a "
                       "permanent warning you cannot act on is what teaches you "
                       "to ignore the panel. Private machines are only polled "
                       "while you are on a known network; public ones are always "
                       "polled.").pack(fill="x")
 
-        head = tk.Frame(self, bg="#f4f4f4"); head.pack(fill="x", padx=10)
+        head = tk.Frame(self, bg=TH.surface2); head.pack(fill="x", padx=10)
         for t, w in (("Machine", 22), ("Network", 12), ("Watch", 8),
                      ("quickpod", 10), ("nvidia-smi", 11), ("Reached via", 14)):
-            tk.Label(head, text=t, width=w, anchor="w", bg="#f4f4f4", fg=INK,
-                     font=("Segoe UI", 8, "bold")).pack(side="left", pady=4)
+            tk.Label(head, text=t, width=w, anchor="w", bg=TH.surface2,
+                     fg=TH.text,
+                     font=(UI, 8, "bold")).pack(side="left", pady=4)
 
-        wrap = tk.Frame(self, bg="white"); wrap.pack(fill="both", expand=True, padx=10)
-        cv = tk.Canvas(wrap, bg="white", highlightthickness=0)
+        wrap = tk.Frame(self, bg=TH.bg); wrap.pack(fill="both", expand=True, padx=10)
+        cv = tk.Canvas(wrap, bg=TH.bg, highlightthickness=0)
         sb = ttk.Scrollbar(wrap, orient="vertical", command=cv.yview)
-        self.body = tk.Frame(cv, bg="white")
+        self.body = tk.Frame(cv, bg=TH.bg)
         self.body.bind("<Configure>",
                        lambda e: cv.configure(scrollregion=cv.bbox("all")))
         cv.create_window((0, 0), window=self.body, anchor="nw")
@@ -1439,29 +1477,30 @@ class Settings(tk.Toplevel):
         cv.bind("<MouseWheel>",
                 lambda e: cv.yview_scroll(int(-e.delta / 120), "units"))
 
-        al = tk.Frame(self, bg="white"); al.pack(fill="x", padx=10, pady=(6, 0))
-        tk.Label(al, bg="white", fg=INK, font=("Segoe UI", 8, "bold"),
+        al = tk.Frame(self, bg=TH.bg); al.pack(fill="x", padx=10, pady=(6, 0))
+        tk.Label(al, bg=TH.bg, fg=TH.text, font=(UI, 8, "bold"),
                  text="Allowed SSH peers (comma separated IPs or CIDRs)")\
             .pack(anchor="w")
-        tk.Label(al, bg="white", fg=INK_MUTED, font=("Segoe UI", 7),
+        tk.Label(al, bg=TH.bg, fg=TH.muted, font=(UI, 7), justify="left",
+                 anchor="w", wraplength=860,
                  text="Sessions from anywhere else are alerted as intrusions. "
                       "Every monitored machine and both gate networks are "
                       "already allowed automatically - list only extras here.")\
             .pack(anchor="w")
-        self.peers = tk.Entry(al, font=("Consolas", 8))
+        self.peers = ttk.Entry(al, font=(MONO, 8))
         self.peers.pack(fill="x", pady=(2, 0))
 
-        bar = tk.Frame(self, bg="white"); bar.pack(fill="x", padx=10, pady=8)
-        tk.Button(bar, text="Add machine...", command=self.add).pack(side="left")
-        tk.Button(bar, text="Remove selected", command=self.remove)\
+        bar = tk.Frame(self, bg=TH.bg); bar.pack(fill="x", padx=10, pady=8)
+        ttk.Button(bar, text="Add machine...", command=self.add).pack(side="left")
+        ttk.Button(bar, text="Remove selected", command=self.remove)\
             .pack(side="left", padx=6)
-        tk.Button(bar, text="Export...", command=self.export_cfg)\
+        ttk.Button(bar, text="Export...", command=self.export_cfg)\
             .pack(side="left", padx=(18, 0))
-        tk.Button(bar, text="Import...", command=self.import_cfg)\
+        ttk.Button(bar, text="Import...", command=self.import_cfg)\
             .pack(side="left", padx=6)
-        tk.Button(bar, text="Save & re-check", command=self.save)\
+        ttk.Button(bar, text="Save & re-check", command=self.save)\
             .pack(side="right")
-        tk.Button(bar, text="Cancel", command=self.destroy)\
+        ttk.Button(bar, text="Cancel", command=self.destroy)\
             .pack(side="right", padx=6)
         self.build()
 
@@ -1475,44 +1514,44 @@ class Settings(tk.Toplevel):
             self.peers.delete(0, "end")
             self.peers.insert(0, ", ".join(self.cfg.get("allowed_peers", [])))
         for m in self.cfg["machines"]:
-            row = tk.Frame(self.body, bg="white"); row.pack(fill="x")
+            row = tk.Frame(self.body, bg=TH.bg); row.pack(fill="x")
             v = {"watch": tk.BooleanVar(value=m.get("enabled", True)),
                  "quickpod": tk.BooleanVar(value=m.get("check_quickpod", False)),
                  "nvidia": tk.BooleanVar(value=m.get("check_nvidia", True)),
                  "scope": tk.StringVar(
                      value="public" if gmconfig.scope_of(m) == "public" else "private")}
             self.rows[m["name"]] = v
-            tk.Radiobutton(row, text="", variable=self.sel, value=m["name"],
-                           bg="white").pack(side="left")
+            ttk.Radiobutton(row, text="", variable=self.sel,
+                            value=m["name"]).pack(side="left")
             tk.Label(row, text=f"{m['name']}  ({m.get('ip') or m.get('alias','')})",
-                     width=20, anchor="w", bg="white", fg=INK,
-                     font=("Segoe UI", 9)).pack(side="left")
+                     width=20, anchor="w", bg=TH.bg, fg=TH.text,
+                     font=(UI, 9)).pack(side="left")
             ttk.Combobox(row, textvariable=v["scope"], width=9, state="readonly",
                          values=("private", "public")).pack(side="left", padx=(0, 12))
             for key, pad in (("watch", 30), ("quickpod", 44), ("nvidia", 46)):
-                tk.Checkbutton(row, variable=v[key], bg="white").pack(side="left")
-                tk.Frame(row, bg="white", width=pad).pack(side="left")
+                ttk.Checkbutton(row, variable=v[key]).pack(side="left")
+                tk.Frame(row, bg=TH.bg, width=pad).pack(side="left")
             tk.Label(row, text=(gmconfig.relay_of(self.cfg, m) or "direct"),
-                     width=14, anchor="w", bg="white", fg=INK_MUTED,
-                     font=("Segoe UI", 8)).pack(side="left")
+                     width=14, anchor="w", bg=TH.bg, fg=TH.muted,
+                     font=(UI, 8)).pack(side="left")
 
     def add(self):
-        d = tk.Toplevel(self); d.title("Add machine"); d.configure(bg="white")
+        d = tk.Toplevel(self); d.title("Add machine"); d.configure(bg=TH.bg)
         fields = {}
         for i, (lbl, default) in enumerate((("name", ""), ("ip", ""),
                                             ("user", "root"),
                                             ("alias (optional)", ""),
                                             ("via relay (optional)", ""))):
-            tk.Label(d, text=lbl, bg="white", anchor="w", width=18)\
+            tk.Label(d, text=lbl, bg=TH.bg, anchor="w", width=18)\
                 .grid(row=i, column=0, padx=8, pady=4, sticky="w")
-            e = tk.Entry(d, width=28); e.insert(0, default)
+            e = ttk.Entry(d, width=28); e.insert(0, default)
             e.grid(row=i, column=1, padx=8, pady=4)
             fields[lbl.split()[0]] = e
         sc = tk.StringVar(value="private")
         ttk.Combobox(d, textvariable=sc, width=10, state="readonly",
                      values=("private", "public")).grid(row=5, column=1, sticky="w",
                                                         padx=8)
-        tk.Label(d, text="network", bg="white", anchor="w", width=18)\
+        tk.Label(d, text="network", bg=TH.bg, anchor="w", width=18)\
             .grid(row=5, column=0, padx=8, sticky="w")
 
         def ok():
@@ -1528,7 +1567,7 @@ class Settings(tk.Toplevel):
                 d.destroy(); self.build()
             except gmconfig.ConfigError as ex:
                 messagebox.showerror("Infra Monitor", str(ex), parent=d)
-        tk.Button(d, text="Add", command=ok).grid(row=6, column=1, sticky="e",
+        ttk.Button(d, text="Add", command=ok).grid(row=6, column=1, sticky="e",
                                                   padx=8, pady=8)
 
     def export_cfg(self):
@@ -1672,6 +1711,10 @@ class App:
         self.stop = threading.Event()
         self.root = tk.Tk()
         self.root.withdraw()
+        # Aura goes on BEFORE the first widget exists. tk fixes a widget's
+        # colours when it is created, so a theme applied afterwards would only
+        # reach whatever is built next - which is how half-dark windows happen.
+        gmtheme.apply(self.root, gmtheme.load_pref(self.cfg))
         self.dash = Dashboard(self.root, self)
         self.dash.withdraw()
         self.icon = pystray.Icon(
@@ -1680,6 +1723,10 @@ class App:
                 pystray.MenuItem("Dashboard", self.show_dash, default=True),
                 pystray.MenuItem("Refresh now", lambda *_: self.poll_now()),
                 pystray.MenuItem("Settings...", self.show_settings),
+                # Appearance follows the OS by default and cycles
+                # System -> Dark -> Light, the same control the dashboard
+                # header carries.
+                pystray.MenuItem(lambda _i: gmtheme.label(), self.cycle_theme),
                 # A checked menu item, not a hidden setting: the app registers
                 # itself at logon on first run, and anything that arranges to
                 # start itself must show an obvious way to stop it.
@@ -1707,6 +1754,72 @@ class App:
 
     def show_settings(self, *_):
         self.root.after(0, lambda: Settings(self.root, self))
+
+    # ---- appearance
+    def cycle_theme(self, *_):
+        """System -> Dark -> Light. Saved, so the choice survives a restart."""
+        self.root.after(0, lambda: self._cycle_theme())
+
+    def _cycle_theme(self):
+        pref = gmtheme.next_pref()
+        cfg = gmconfig.load()
+        cfg[gmtheme.PREF_KEY] = pref
+        try:
+            gmconfig.save(cfg)
+        except OSError as ex:
+            # Not fatal: the flip still applies to this session. A monitor that
+            # refused to change appearance because a settings file was
+            # read-only would be the wrong priority.
+            log.error("could not save theme setting: %s", ex)
+        self.cfg = cfg
+        log.info("theme preference set to %s", pref)
+        self._retheme(pref)
+        try:
+            self.icon.update_menu()
+        except Exception:
+            pass
+
+    def _system_theme(self, mode):
+        """The OS flipped Aura Dark/Light - follow it, unless overridden."""
+        if gmtheme.pref() != "system" or mode == TH.mode:
+            return
+        log.info("OS appearance changed to %s - re-theming", mode)
+        self._retheme()
+
+    def _retheme(self, pref=None):
+        """Rebuild the windows in the resolved theme.
+
+        tk binds a colour at widget-construction time, so a flip means building
+        the dashboard again rather than repainting a hundred and fifty widgets
+        in place and missing some. Every panel already renders itself from a
+        stored snapshot, so nothing is lost but the scroll position - and the
+        alternative, a relogin-style "restart to apply", is exactly the
+        behaviour the design system forbids."""
+        gmtheme.apply(self.root, pref)
+        old = self.dash
+        geom, visible, ssnap = None, False, None
+        try:
+            geom = old.geometry()
+            visible = old.state() == "normal"
+            ssnap = old.ssnap
+        except Exception:
+            pass
+        try:
+            old.destroy()
+        except Exception:
+            pass
+        self.dash = Dashboard(self.root, self)
+        if geom:
+            self.dash.geometry(geom)
+        if not visible:
+            self.dash.withdraw()
+        self.dash.render(self.snap)
+        if self.lsnap:
+            self.dash.render_local(self.lsnap)
+            self.dash.render_conns(self.lsnap)
+        if ssnap:
+            self.dash.render_stealth(ssnap)
+        self.dash.render_problems(self.problem_log)
 
     def poll_now(self, *_):
         self._wake.set()
@@ -1898,6 +2011,8 @@ class App:
                 elif kind == "stealth":
                     self.dash.render_stealth(snap)
                     self.dash.render_problems(self.problem_log)
+                elif kind == "theme":
+                    self._system_theme(snap)
                 else:
                     self._apply_local(snap)
         except queue.Empty:
@@ -1984,6 +2099,10 @@ class App:
             # Never fatal. Failing to start because a convenience setting could
             # not be written would be the wrong priority for a monitor.
             log.exception("autostart sync failed")
+        # The OS appearance signal arrives on darkdetect's own thread, so it
+        # goes through the same queue every other worker uses rather than
+        # reaching into Tcl from the wrong thread.
+        gmtheme.watch_system(lambda mode: self.q.put(("theme", mode)))
         threading.Thread(target=self.icon.run, daemon=True,
                          name="tray").start()
         threading.Thread(target=self.poller, daemon=True, name="poller").start()

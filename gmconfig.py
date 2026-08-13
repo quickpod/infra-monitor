@@ -88,6 +88,10 @@ DEFAULTS = {
     # by the next start. A monitor nobody remembered to launch is a monitor
     # that was not watching, so the default is on.
     "autostart": True,
+    # Appearance. "system" follows the desktop's Aura Dark/Light live, which is
+    # what the QuickOpen OS shell expects of every app; "dark" / "light" are an
+    # explicit user override set from the dashboard header or the tray menu.
+    "theme": "system",
     # The same "is anyone else in here?" question, asked about THIS laptop -
     # the one machine the SSH checks can never see. See gmlocal.py.
     "local_watch": {

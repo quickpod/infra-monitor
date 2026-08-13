@@ -23,7 +23,7 @@ jobs:
         run: python -m pip install --upgrade pip -r requirements.txt pyinstaller
 
       - name: Syntax-check
-        run: python -m py_compile gmtray.py gmconfig.py gmlocal.py sshconn.py gmcheck.py gmpaths.py gmnotify.py gmstealth.py gmexport.py gmautostart.py bootstrap_ssh.py
+        run: python -m py_compile gmtray.py gmconfig.py gmlocal.py sshconn.py gmcheck.py gmpaths.py gmnotify.py gmstealth.py gmexport.py gmautostart.py gmtheme.py aura.py bootstrap_ssh.py
 
       - name: Validate the shipped config templates
         run: python -c "import json; json.load(open('machines.json')); json.load(open('machines.example.json')); print('config templates parse OK')"
@@ -34,6 +34,8 @@ jobs:
           --icon infra-monitor.ico
           --version-file packaging/version.txt
           --add-data "infra-monitor.ico;."
+          --add-data "infra-monitor.png;."
+          --collect-all customtkinter
           --collect-all paramiko
           --collect-all cryptography
           --collect-all pystray

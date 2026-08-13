@@ -47,6 +47,7 @@ DIST = os.path.join(HERE, "dist")
 # offers, so nothing in the source names `pystray._win32` at all.
 HIDDEN = ["gmconfig", "gmcheck", "gmnotify", "gmlocal", "gmpaths",
           "gmautostart", "gmexport", "gmstealth", "sshconn",
+          "gmtheme", "aura", "customtkinter", "darkdetect",
           "pystray._win32", "PIL.Image", "PIL.ImageDraw",
           "paramiko", "cryptography"]
 
@@ -74,9 +75,18 @@ def main():
         cmd += ["--hidden-import", h]
     for e in EXCLUDE:
         cmd += ["--exclude-module", e]
+    # CustomTkinter ships .json colour-theme assets that PyInstaller's source
+    # analysis never sees. Aura loads one at startup, so without this the
+    # frozen exe dies before it draws anything.
+    cmd += ["--collect-all", "customtkinter"]
     icon = os.path.join(HERE, "infra-monitor.ico")
     if os.path.isfile(icon):
         cmd += ["--icon", icon]
+    # The PNG is a BUNDLED asset (the dashboard header brand mark), unlike
+    # machines.json which stays beside the exe as user data - see gmpaths.
+    png = os.path.join(HERE, "infra-monitor.png")
+    if os.path.isfile(png):
+        cmd += ["--add-data", png + os.pathsep + "."]
     cmd.append(ENTRY)
 
     print("building:", " ".join(cmd[:8]), "...")

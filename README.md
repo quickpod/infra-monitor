@@ -137,9 +137,26 @@ panel permanently red on any internet-facing host.
 | `gmstealth.py` | what an address answers *from outside* - the relay-launched port sweep |
 | `gmnotify.py` | Windows toasts, fired only on state changes |
 | `gmtray.py` | tray icon, dashboard, settings (entry point: `main(argv)`) |
+| `gmtheme.py` | the Aura palette, the accent beam and the KPI tile component |
+| `aura.py` | the vendored QuickOpen Aura design system (do not edit; re-vendor) |
 | `bootstrap_ssh.py` | one-time key install + fail2ban allowlist; fleet add/remove |
 | `machines.json` | your config (ships empty; monitors nothing until you add hosts) |
 | `machines.example.json` | a documented template with fake example hosts |
+
+## Appearance
+
+Infra Monitor uses the **Aura design system**, the same look every QuickOpen app
+and the AIQuick desktop share: deep-space dark or a clean light surface, one
+per-app accent, hairline cards, and the accent beam under the header.
+
+It follows your desktop's light/dark setting by default and changes with it
+live - no restart. To pin it, click **Theme** in the dashboard header (or the
+tray menu) to cycle *System -> Dark -> Light*; the choice is saved as `theme` in
+`machines.json`.
+
+The tray ICON is deliberately not themed: it is painted into the notification
+area over whatever the shell puts behind it, so it keeps one fixed high-contrast
+set of status colours.
 
 ## Configuration
 

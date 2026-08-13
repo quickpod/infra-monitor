@@ -40,6 +40,20 @@ def frozen():
     return bool(getattr(sys, "frozen", False))
 
 
+def asset(name):
+    """A read-only file that ships INSIDE the bundle, not beside the exe.
+
+    The opposite of APP_DIR: the app ICON is part of the build and must come
+    out of PyInstaller's unpack directory, while machines.json is user data and
+    must not. Reading an asset from APP_DIR works from source and then quietly
+    fails in the frozen build, which is exactly the trap this module exists to
+    document.
+    """
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(
+        os.path.realpath(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
+
 def relaunch_argv(*args):
     """The command line that re-runs THIS app with `args`.
 

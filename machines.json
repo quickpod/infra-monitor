@@ -33,5 +33,6 @@
     "alert_outbound": true,
     "alert_unverified": false
   },
-  "autostart": true
+  "autostart": true,
+  "theme": "system"
 }

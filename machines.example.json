@@ -96,5 +96,8 @@
     "alert_unverified": false
   },
 
-  "autostart": true
+  "autostart": true,
+
+  "_comment_theme": "Appearance. 'system' follows the desktop's light/dark setting live; 'dark' or 'light' pins it. Also changed from the dashboard header or the tray menu.",
+  "theme": "system"
 }
