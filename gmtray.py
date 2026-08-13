@@ -1445,8 +1445,8 @@ class Settings(tk.Toplevel):
         # Wider than the original 720: the Aura type scale is a step up from
         # the 8pt this window was laid out for, and at 720 the button row ran
         # off the edge with Cancel past the frame.
-        self.geometry("900x560")
-        self.minsize(820, 480)
+        self.geometry("1000x580")
+        self.minsize(900, 480)
         self.configure(bg=TH.bg)
         self.rows = {}
 
