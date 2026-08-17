@@ -36,6 +36,28 @@ def app_dir():
     return os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
 
 
+def state_dir():
+    """A directory the RUNNING USER can write: log, config, scratch files.
+
+    APP_DIR is the install prefix. On Windows that is writable and keeping the
+    log beside the exe is deliberate (see the module docstring). On Linux the
+    app is installed to /opt/quickopen/infra-monitor, owned by root, so writing
+    there raises PermissionError for every non-root user — the app crashed on
+    import for exactly that reason (field report, Quick OS 0.1.15: the only hard
+    launch failure in a 52-app sweep). User data belongs under XDG_STATE_HOME.
+    """
+    if os.name == "nt":
+        return APP_DIR
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "state")
+    path = os.path.join(base, "quickopen", "infra-monitor")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        return os.path.join(os.environ.get("TMPDIR", "/tmp"))
+    return path
+
+
 def frozen():
     return bool(getattr(sys, "frozen", False))
 
@@ -66,3 +88,4 @@ def relaunch_argv(*args):
 
 
 APP_DIR = app_dir()
+STATE_DIR = state_dir()

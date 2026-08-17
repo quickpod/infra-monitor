@@ -59,7 +59,7 @@ if os.name == "nt":
 # no clue why. That happened. Everything goes to a file instead. A windowed
 # PyInstaller build has exactly the same problem, which is why the log lives
 # beside the exe rather than inside the temporary unpack directory.
-LOG_PATH = os.path.join(gmpaths.APP_DIR, "inframonitor.log")
+LOG_PATH = os.path.join(gmpaths.STATE_DIR, "inframonitor.log")
 logging.basicConfig(
     filename=LOG_PATH, level=logging.INFO, filemode="a",
     format="%(asctime)s %(levelname)-7s %(threadName)-12s %(message)s")
@@ -2233,7 +2233,7 @@ def main(argv=None):
     if "--local-scan" in argv:
         out = (argv[argv.index("--out") + 1]
                if "--out" in argv and len(argv) > argv.index("--out") + 1
-               else os.path.join(gmpaths.APP_DIR, "elevated_scan.tmp"))
+               else os.path.join(gmpaths.STATE_DIR, "elevated_scan.tmp"))
         snap = gmlocal.scan()
         with open(out, "w", encoding="utf-8") as f:
             json.dump(snap, f)

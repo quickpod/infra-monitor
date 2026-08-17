@@ -41,7 +41,7 @@ import gmpaths
 
 # Next to the exe when frozen, next to this file when running from source.
 # See gmpaths - getting this wrong makes every saved setting vanish on exit.
-CONFIG_PATH = os.path.join(gmpaths.APP_DIR, "machines.json")
+CONFIG_PATH = os.path.join(gmpaths.STATE_DIR, "machines.json")
 
 DEFAULTS = {
     "version": 1,
