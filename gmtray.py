@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 r"""
 gmtray - background tray monitor for a fleet of SSH machines.
 
@@ -116,12 +116,52 @@ def worst_colour(snap):
 
 
 def make_icon_image(colour, badge=0):
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    """The tray icon: the app's own mark, with STATE shown as a corner badge.
+
+    It used to be a flat coloured circle — a green dot that told you the state
+    and nothing else, so the tray gave no clue which app it belonged to (owner,
+    2026-08-17: "put a good status icon not just a green dot"). Now the icon is
+    recognisably Infra Monitor at a glance and the colour rides in a badge, which
+    is how every other tray citizen does it.
+
+    Falls back to a drawn rack glyph if the packaged artwork is missing, so a
+    stripped build still gets something better than a dot.
+    """
+    size = 64
+    img = None
+    try:
+        art = Image.open(gmpaths.asset("infra-monitor.png")).convert("RGBA")
+        img = art.resize((size, size), Image.LANCZOS)
+    except Exception:
+        img = None
+
+    if img is None:
+        # a small server rack: three stacked units with drive lights
+        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle((10, 8, 54, 56), radius=7, fill="#2b313b",
+                            outline="#9aa4b2", width=2)
+        for i, top in enumerate((14, 28, 42)):
+            d.rounded_rectangle((16, top, 48, top + 10), radius=3,
+                                fill="#1a1e26", outline="#3a424f")
+            d.ellipse((19, top + 3, 24, top + 8), fill=colour)
+
+    # state badge, bottom-right, with a ring so it reads on any wallpaper
     d = ImageDraw.Draw(img)
-    d.ellipse((6, 6, 58, 58), fill=colour)
+    r = 22
+    box = (size - r - 2, size - r - 2, size - 2, size - 2)
+    d.ellipse(box, fill="#0b0d12")
+    d.ellipse((box[0] + 2, box[1] + 2, box[2] - 2, box[3] - 2), fill=colour)
     if badge:
-        d.ellipse((34, 2, 62, 30), fill="#ffffff")
-        d.text((41 if badge < 10 else 37, 8), str(min(badge, 99)), fill=colour)
+        # a count belongs ON the badge, not floating over the artwork
+        text = str(min(badge, 99))
+        try:
+            tw = d.textlength(text)
+        except AttributeError:
+            tw = 6 * len(text)
+        cx = (box[0] + box[2]) / 2 - tw / 2
+        cy = (box[1] + box[3]) / 2 - 6
+        d.text((cx, cy), text, fill="#0b0d12")
     return img
 
 
@@ -350,6 +390,12 @@ def copyable(parent, text, width=None, **kw):
 class Dashboard(tk.Toplevel):
     def __init__(self, master, app):
         super().__init__(master)
+        # A transient window belongs to its parent: Plasma keeps it with the
+        # app instead of giving it a taskbar entry of its own.
+        try:
+            self.transient(master.winfo_toplevel())
+        except Exception:
+            pass
         self.app = app
         self.title("Infra Monitor")
         self.geometry("1400x740")
@@ -619,15 +665,15 @@ class Dashboard(tk.Toplevel):
     def _trust_selected(self):
         r = self._selected_local()
         if not r:
-            messagebox.showinfo("Infra Monitor", "Select a row first.", parent=self)
+            gmtheme.notice("Infra Monitor", "Select a row first.", parent=self)
             return
         if not r["path"]:
-            messagebox.showwarning(
+            gmtheme.warn(
                 "Infra Monitor", "This process has no readable image path, so there "
                 "is nothing to trust that could not be impersonated.\n\n"
                 "Run 'Scan as administrator' to identify it first.", parent=self)
             return
-        if not messagebox.askyesno(
+        if not gmtheme.confirm(
                 "Infra Monitor",
                 f"Stop reporting connections owned by:\n\n{r['path']}\n\n"
                 f"Every socket from this exact image is accounted for from now "
@@ -996,7 +1042,7 @@ class Dashboard(tk.Toplevel):
     def _run_stealth(self):
         target = self.starget.get().strip()
         if not target:
-            messagebox.showinfo("Infra Monitor", "Enter an IP address or hostname to "
+            gmtheme.notice("Infra Monitor", "Enter an IP address or hostname to "
                                           "check.", parent=self)
             return
         if self.sbusy:
@@ -1490,8 +1536,25 @@ class Settings(tk.Toplevel):
         self.peers = ttk.Entry(al, font=(MONO, 8))
         self.peers.pack(fill="x", pady=(2, 0))
 
+        jl = tk.Frame(self, bg=TH.bg); jl.pack(fill="x", padx=10, pady=(8, 0))
+        tk.Label(jl, bg=TH.bg, fg=TH.text, font=(UI, 8, "bold"),
+                 text="Default relay for private machines (optional)")\
+            .pack(anchor="w")
+        tk.Label(jl, bg=TH.bg, fg=TH.muted, font=(UI, 7), justify="left",
+                 anchor="w", wraplength=860,
+                 text="Machines on a private network are reached through this "
+                      "host unless their own relay above says otherwise. Leave "
+                      "empty to connect to every machine directly.")\
+            .pack(anchor="w")
+        # values are filled in build(), which is the only place cfg is loaded —
+        # constructing them here would freeze an empty list into the widget
+        self.jump = ttk.Combobox(jl, font=(MONO, 8), state="readonly", values=[""])
+        self.jump.pack(fill="x", pady=(2, 0))
+
         bar = tk.Frame(self, bg=TH.bg); bar.pack(fill="x", padx=10, pady=8)
         ttk.Button(bar, text="Add machine...", command=self.add).pack(side="left")
+        ttk.Button(bar, text="Relay hosts...", command=self.relays)\
+            .pack(side="left", padx=6)
         ttk.Button(bar, text="Remove selected", command=self.remove)\
             .pack(side="left", padx=6)
         ttk.Button(bar, text="Export...", command=self.export_cfg)\
@@ -1513,6 +1576,11 @@ class Settings(tk.Toplevel):
         if hasattr(self, "peers"):
             self.peers.delete(0, "end")
             self.peers.insert(0, ", ".join(self.cfg.get("allowed_peers", [])))
+        if hasattr(self, "jump"):
+            # refresh the choices too: a relay added in the Relay hosts dialog
+            # must appear here without reopening Settings
+            self.jump["values"] = [""] + gmconfig.relay_names(self.cfg)
+            self.jump.set(self.cfg.get("jump_host", "") or "")
         for m in self.cfg["machines"]:
             row = tk.Frame(self.body, bg=TH.bg); row.pack(fill="x")
             v = {"watch": tk.BooleanVar(value=m.get("enabled", True)),
@@ -1531,27 +1599,56 @@ class Settings(tk.Toplevel):
             for key, pad in (("watch", 30), ("quickpod", 44), ("nvidia", 46)):
                 ttk.Checkbutton(row, variable=v[key]).pack(side="left")
                 tk.Frame(row, bg=TH.bg, width=pad).pack(side="left")
-            tk.Label(row, text=(gmconfig.relay_of(self.cfg, m) or "direct"),
-                     width=14, anchor="w", bg=TH.bg, fg=TH.muted,
-                     font=(UI, 8)).pack(side="left")
+            # "Reached via" used to be a read-only label, so a relay could only
+            # be set when the machine was first added and never changed, and the
+            # global default had no UI at all (owner, 2026-08-17: "we need a way
+            # to add relay hosts"). It is a picker now: any other machine can act
+            # as the relay, or "(direct)" for a straight SSH connection.
+            v["via"] = tk.StringVar(value=(m.get("via") or ""))
+            others = [""] + [n for n in gmconfig.relay_names(self.cfg)
+                             if n != m["name"]]
+            box = ttk.Combobox(row, textvariable=v["via"], width=12,
+                               values=others)
+            box.pack(side="left")
+            # what it RESOLVES to, which is not the same thing: a private machine
+            # with no explicit via still inherits the default relay below
+            eff = gmconfig.relay_of(self.cfg, m) or "direct"
+            tk.Label(row, text="→ %s" % eff, anchor="w", bg=TH.bg, fg=TH.muted,
+                     font=(UI, 7)).pack(side="left", padx=(4, 0))
 
     def add(self):
         d = tk.Toplevel(self); d.title("Add machine"); d.configure(bg=TH.bg)
+        d.transient(self.winfo_toplevel())
         fields = {}
-        for i, (lbl, default) in enumerate((("name", ""), ("ip", ""),
-                                            ("user", "root"),
-                                            ("alias (optional)", ""),
-                                            ("via relay (optional)", ""))):
-            tk.Label(d, text=lbl, bg=TH.bg, anchor="w", width=18)\
+        # key and label are separate on purpose: the key is what ok() reads, so
+        # renaming a label (e.g. "ip" -> "IP or hostname") must not silently
+        # change the dict key and turn Add into a KeyError.
+        hops = [""] + gmconfig.relay_names(gmconfig.load())
+        for i, (key, lbl, default) in enumerate(
+                (("name", "name", ""),
+                 ("ip", "IP or hostname", ""),
+                 ("user", "user", "root"),
+                 ("alias", "alias (optional)", ""),
+                 ("via", "via relay (optional)", ""))):
+            tk.Label(d, text=lbl, bg=TH.bg, fg=TH.text, font=(UI, 8),
+                     anchor="w", width=18)\
                 .grid(row=i, column=0, padx=8, pady=4, sticky="w")
-            e = ttk.Entry(d, width=28); e.insert(0, default)
+            if key == "via":
+                # a relay is CHOSEN, not typed: free text here just invited a
+                # name that does not exist (owner: "relays should be available
+                # as dropdowns")
+                e = ttk.Combobox(d, width=26, values=hops, state="readonly")
+                e.set(default)
+            else:
+                e = ttk.Entry(d, width=28); e.insert(0, default)
             e.grid(row=i, column=1, padx=8, pady=4)
-            fields[lbl.split()[0]] = e
+            fields[key] = e
         sc = tk.StringVar(value="private")
         ttk.Combobox(d, textvariable=sc, width=10, state="readonly",
                      values=("private", "public")).grid(row=5, column=1, sticky="w",
                                                         padx=8)
-        tk.Label(d, text="network", bg=TH.bg, anchor="w", width=18)\
+        tk.Label(d, text="network", bg=TH.bg, fg=TH.text, font=(UI, 8),
+                 anchor="w", width=18)\
             .grid(row=5, column=0, padx=8, sticky="w")
 
         def ok():
@@ -1566,9 +1663,96 @@ class Settings(tk.Toplevel):
                 gmconfig.save(cfg)
                 d.destroy(); self.build()
             except gmconfig.ConfigError as ex:
-                messagebox.showerror("Infra Monitor", str(ex), parent=d)
+                gmtheme.error("Infra Monitor", str(ex), parent=d)
         ttk.Button(d, text="Add", command=ok).grid(row=6, column=1, sticky="e",
                                                   padx=8, pady=8)
+
+    def relays(self):
+        """Add or remove RELAY hosts — bastions you connect *through*.
+
+        A relay used to have to be one of the monitored machines, because
+        sshconn.open_jump looked the name up in machines.json. That made a plain
+        bastion impossible to configure (owner, 2026-08-17: "still does not have
+        a way to add relay hosts"). Relays are their own list now: name, address,
+        user, port — nothing about monitoring.
+        """
+        d = tk.Toplevel(self); d.title("Relay hosts"); d.configure(bg=TH.bg)
+        d.transient(self.winfo_toplevel())
+        tk.Label(d, bg=TH.bg, fg=TH.muted, font=(UI, 8), justify="left",
+                 wraplength=520, anchor="w",
+                 text="A relay is a host you connect THROUGH to reach machines "
+                      "that are not directly reachable. It does not have to be "
+                      "monitored. Pick a relay per machine, or set one as the "
+                      "default, in the main Settings window.")\
+            .pack(fill="x", padx=12, pady=(12, 8))
+
+        listbox = tk.Listbox(d, height=6, bg=TH.surface, fg=TH.text,
+                             selectbackground=TH.get("accent", "#5b86f7"),
+                             highlightthickness=0, relief="flat", font=(MONO, 9))
+        listbox.pack(fill="both", expand=True, padx=12)
+
+        def refill():
+            listbox.delete(0, "end")
+            for r in gmconfig.load().get("relays", []):
+                listbox.insert("end", "%s    %s@%s:%s"
+                               % (r.get("name"), r.get("user", "root"),
+                                  r.get("ip", "?"), r.get("port", 22)))
+            if not listbox.size():
+                listbox.insert("end", "(no relay hosts yet)")
+        refill()
+
+        form = tk.Frame(d, bg=TH.bg); form.pack(fill="x", padx=12, pady=10)
+        ent = {}
+        for i, (key, lbl, default) in enumerate(
+                (("name", "name", ""), ("host", "IP or hostname", ""),
+                 ("user", "user", "root"), ("port", "port", "22"))):
+            tk.Label(form, text=lbl, bg=TH.bg, fg=TH.text, anchor="w",
+                     width=14, font=(UI, 8)).grid(row=i, column=0, sticky="w",
+                                                  pady=2)
+            e = ttk.Entry(form, width=26); e.insert(0, default)
+            e.grid(row=i, column=1, sticky="w", pady=2)
+            ent[key] = e
+
+        def add_it():
+            cfg = gmconfig.load()
+            try:
+                gmconfig.add_relay(cfg, ent["name"].get().strip(),
+                                   ent["host"].get().strip(),
+                                   ent["user"].get().strip() or "root",
+                                   ent["port"].get().strip() or 22)
+            except gmconfig.ConfigError as ex:
+                gmtheme.error("Infra Monitor", str(ex), parent=d)
+                return
+            gmconfig.save(cfg)
+            for e in ent.values():
+                e.delete(0, "end")
+            ent["user"].insert(0, "root"); ent["port"].insert(0, "22")
+            refill()
+            self.build()          # the pickers must offer the new relay at once
+
+        def remove_it():
+            sel = listbox.curselection()
+            if not sel:
+                gmtheme.notice("Infra Monitor", "Select a relay first.", parent=d)
+                return
+            name = listbox.get(sel[0]).split()[0]
+            if name == "(no":
+                return
+            if not gmtheme.confirm(
+                    "Remove relay",
+                    "Remove relay %r?\n\nAny machine using it goes back to a "
+                    "direct connection." % name, parent=d):
+                return
+            cfg = gmconfig.remove_relay(gmconfig.load(), name)
+            gmconfig.save(cfg)
+            refill()
+            self.build()
+
+        row = tk.Frame(d, bg=TH.bg); row.pack(fill="x", padx=12, pady=(0, 12))
+        ttk.Button(row, text="Add relay", command=add_it).pack(side="left")
+        ttk.Button(row, text="Remove selected", command=remove_it)\
+            .pack(side="left", padx=6)
+        ttk.Button(row, text="Close", command=d.destroy).pack(side="right")
 
     def export_cfg(self):
         """Write a portable copy of this configuration.
@@ -1585,7 +1769,7 @@ class Settings(tk.Toplevel):
             filetypes=[("Infra Monitor config", "*.json"), ("All files", "*.*")])
         if not path:
             return
-        with_local = has_local and messagebox.askyesno(
+        with_local = has_local and gmtheme.confirm(
             "Infra Monitor", "Include this machine's trusted-image list?\n\n"
             "Those are absolute paths to binaries on THIS PC. On another "
             "machine they are meaningless at best, and at worst a path that "
@@ -1594,10 +1778,10 @@ class Settings(tk.Toplevel):
         try:
             b = gmexport.export_config(path, with_local=with_local)
         except Exception as ex:
-            messagebox.showerror("Infra Monitor", f"Export failed:\n\n{ex}", parent=self)
+            gmtheme.error("Infra Monitor", f"Export failed:\n\n{ex}", parent=self)
             return
         log.info("config exported to %s (with_local=%s)", path, with_local)
-        messagebox.showinfo(
+        gmtheme.notice(
             "Infra Monitor", f"Exported {len(b['config'].get('machines', []))} "
             f"machine(s) to\n\n{path}\n\nNothing in this file is secret - no "
             f"keys, no passwords. The 'bootstrapped' flags were reset, so the "
@@ -1615,18 +1799,18 @@ class Settings(tk.Toplevel):
             data, incoming = gmexport.read_bundle(path)
             problems = gmexport.validate(incoming)
         except Exception as ex:
-            messagebox.showerror("Infra Monitor", f"Cannot read that file:\n\n{ex}",
+            gmtheme.error("Infra Monitor", f"Cannot read that file:\n\n{ex}",
                                  parent=self)
             return
         if problems:
             # Refuse rather than import the good half: a config that is
             # partly the old fleet and partly the new one is worse than either.
-            messagebox.showerror(
+            gmtheme.error(
                 "Infra Monitor", "This config was NOT imported - nothing has "
                 "changed:\n\n" + "\n".join(problems[:12]), parent=self)
             return
         n = len(incoming.get("machines", []))
-        merge = messagebox.askyesno(
+        merge = gmtheme.confirm(
             "Infra Monitor",
             f"{os.path.basename(path)}\nwritten {data.get('exported_at')} on "
             f"{data.get('exported_from')}\n\n{n} machine(s).\n\n"
@@ -1637,10 +1821,10 @@ class Settings(tk.Toplevel):
         try:
             summary, backup = gmexport.import_config(path, merge=merge)
         except Exception as ex:
-            messagebox.showerror("Infra Monitor", f"Import failed:\n\n{ex}", parent=self)
+            gmtheme.error("Infra Monitor", f"Import failed:\n\n{ex}", parent=self)
             return
         log.info("config imported from %s (merge=%s): %s", path, merge, summary)
-        messagebox.showinfo(
+        gmtheme.notice(
             "Infra Monitor", f"{summary['machines']} machine(s) now configured "
             f"({summary['added']} added, {summary['updated']} updated).\n\n"
             + (f"Previous config kept as\n{os.path.basename(backup)}\n\n"
@@ -1653,9 +1837,9 @@ class Settings(tk.Toplevel):
     def remove(self):
         name = self.sel.get()
         if not name:
-            messagebox.showinfo("Infra Monitor", "Select a machine first.", parent=self)
+            gmtheme.notice("Infra Monitor", "Select a machine first.", parent=self)
             return
-        if not messagebox.askyesno("Infra Monitor", f"Stop monitoring {name}?\n\n"
+        if not gmtheme.confirm("Infra Monitor", f"Stop monitoring {name}?\n\n"
                                    "Its SSH key on the machine is left alone.",
                                    parent=self):
             return
@@ -1674,6 +1858,23 @@ class Settings(tk.Toplevel):
             m["check_quickpod"] = v["quickpod"].get()
             m["check_nvidia"] = v["nvidia"].get()
             m["scope"] = "public" if v["scope"].get() == "public" else "local"
+            via = (v["via"].get() or "").strip()
+            if via and not gmconfig.resolve_hop(cfg, via):
+                gmtheme.error(
+                    "Infra Monitor",
+                    "%s: relay %r is not a monitored machine or a relay host.\n\n"
+                    "Nothing was saved." % (name, via), parent=self)
+                return
+            if via == name:
+                gmtheme.error(
+                    "Infra Monitor",
+                    "%s cannot relay through itself — that would prove nothing "
+                    "about it.\n\nNothing was saved." % name, parent=self)
+                return
+            if via:
+                m["via"] = via
+            else:
+                m.pop("via", None)
         peers, bad = [], []
         for p in self.peers.get().replace(";", ",").split(","):
             p = p.strip()
@@ -1686,11 +1887,21 @@ class Settings(tk.Toplevel):
             except ValueError:
                 bad.append(p)
         if bad:
-            messagebox.showerror("Infra Monitor", "Not valid IPs/CIDRs:\n  " +
+            gmtheme.error("Infra Monitor", "Not valid IPs/CIDRs:\n  " +
                                  "\n  ".join(bad) + "\n\nNothing was saved.",
                                  parent=self)
             return
         cfg["allowed_peers"] = peers
+        jump = (self.jump.get() or "").strip() if hasattr(self, "jump") else ""
+        if jump and not gmconfig.resolve_hop(cfg, jump):
+            gmtheme.error(
+                "Infra Monitor",
+                "Default relay %r is not a monitored machine or a relay "
+                "host.\n\nAdd it under \"Relay hosts...\", or leave the field "
+                "empty for direct connections.\n\nNothing was saved." % jump,
+                parent=self)
+            return
+        cfg["jump_host"] = jump
         gmconfig.save(cfg)
         log.info("settings saved by user")
         self.destroy()
@@ -1711,6 +1922,18 @@ class App:
         self.stop = threading.Event()
         self.root = tk.Tk()
         self.root.withdraw()
+        # iconphoto(True, ...) makes this the DEFAULT for every window created
+        # afterwards, so dialogs stop inventing their own (owner, 2026-08-17:
+        # "a separate icon appears in task bar for each dialog it should be all
+        # unified"). WM_CLASS is already handled once in aura.py, which patches
+        # tk.Tk.__init__ — the two together are what lets Plasma group the
+        # windows under the pinned launcher.
+        try:
+            self._win_icon = tk.PhotoImage(
+                file=gmpaths.asset("infra-monitor.png"))
+            self.root.iconphoto(True, self._win_icon)
+        except Exception:
+            self._win_icon = None      # never fatal: an icon is cosmetic
         # Aura goes on BEFORE the first widget exists. tk fixes a widget's
         # colours when it is created, so a theme applied afterwards would only
         # reach whatever is built next - which is how half-dark windows happen.
@@ -1723,6 +1946,8 @@ class App:
                 pystray.MenuItem("Dashboard", self.show_dash, default=True),
                 pystray.MenuItem("Refresh now", lambda *_: self.poll_now()),
                 pystray.MenuItem("Settings...", self.show_settings),
+                pystray.MenuItem("Trust this network", self.trust_network),
+                pystray.MenuItem("Forget networks", self.forget_networks),
                 # Appearance follows the OS by default and cycles
                 # System -> Dark -> Light, the same control the dashboard
                 # header carries.
@@ -1730,7 +1955,7 @@ class App:
                 # A checked menu item, not a hidden setting: the app registers
                 # itself at logon on first run, and anything that arranges to
                 # start itself must show an obvious way to stop it.
-                pystray.MenuItem("Start with Windows", self.toggle_autostart,
+                pystray.MenuItem("Start automatically at login", self.toggle_autostart,
                                  checked=lambda _i: self.cfg.get("autostart", True)),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Quit", self.quit)))
@@ -1751,6 +1976,41 @@ class App:
         self.dash.deiconify()
         self.dash.lift()
         self.dash.focus_force()
+
+    def trust_network(self, *_a):
+        """Add the current network to the trusted list, from the UI.
+
+        The fleet is only probed on networks the user has trusted (see
+        gmcheck.gate_ok): private addresses belong to whoever owns the LAN we are
+        attached to, so probing them anywhere else is wrong. First run adopts the
+        install network automatically; this is how the second, third and VPN
+        networks get added — without a terminal (field ask 2026-08-17).
+        """
+        try:
+            _cfg, mac, label, added = gmcheck.learn_gate()
+        except RuntimeError as e:
+            gmnotify.toast("Cannot trust this network", [str(e)])
+            return
+        gmnotify.toast("Network trusted" if added else "Already trusted",
+                       ["%s (gateway %s)" % (label, mac),
+                        "The fleet will be checked here."])
+        self.poll_now()
+
+    def forget_networks(self, *_a):
+        """Drop every trusted network, so nothing local is probed until one is
+        trusted again. The counterpart to Trust this network — the user can undo
+        what they granted."""
+        cfg = gmconfig.load()
+        n = len(cfg.get("gate_fingerprints") or [])
+        cfg["gate_fingerprints"] = []
+        # do not silently re-adopt on the next check, or Forget would do nothing
+        cfg["gate_adopt_disabled"] = True
+        gmconfig.save(cfg)
+        gmnotify.toast("Networks forgotten",
+                       ["Removed %d trusted network(s)." % n,
+                        "Local machines will not be checked until you use "
+                        "Trust this network."])
+        self.poll_now()
 
     def show_settings(self, *_):
         self.root.after(0, lambda: Settings(self.root, self))
@@ -2136,7 +2396,14 @@ def _report(title, text, ok=True):
         return
     try:
         r = tk.Tk(); r.withdraw()
-        (messagebox.showinfo if ok else messagebox.showerror)(title, text)
+        # even the no-session path gets the themed dialog: this is the one the
+        # user sees after a CLI-ish action, so a stock X11 box here would be the
+        # only unstyled surface left in the app
+        try:
+            gmtheme.apply(r)
+        except Exception:
+            pass
+        (gmtheme.notice if ok else gmtheme.error)(title, text, r)
         r.destroy()
     except Exception:
         pass
@@ -2183,7 +2450,7 @@ def main(argv=None):
             pass
         note = gmautostart.sync(cfg) or ("already registered" if on
                                          else "was not registered")
-        _report("Infra Monitor", f"Start with Windows: {'ON' if on else 'OFF'}\n{note}")
+        _report("Infra Monitor", f"Start automatically at login: {'ON' if on else 'OFF'}\n{note}")
         return 0
 
     # Teach the gate this network. Run it once in each house; from then on

@@ -61,13 +61,15 @@ def open_jump(cfg, password=None, timeout=15):
     name = cfg.get("jump_host")
     if not name:
         return None
-    jm = None
-    for m in cfg["machines"]:
-        if m["name"] == name:
-            jm = m
-            break
+    # A relay may be a MONITORED machine or a relay-only host (see
+    # gmconfig.resolve_hop). It used to have to be a monitored machine, which
+    # made a plain bastion impossible to configure.
+    jm = gmconfig.resolve_hop(cfg, name)
     if jm is None:
-        raise Unreachable(f"jump_host {name!r} is not in machines.json")
+        raise Unreachable(
+            f"relay {name!r} is neither a monitored machine nor a relay host")
+    if not jm.get("ip"):
+        raise Unreachable(f"relay {name!r} has no address to connect to")
     return connect(cfg, jm, password=password, jump=None, timeout=timeout)
 
 
@@ -82,11 +84,13 @@ def connect(cfg, machine, password=None, jump=None, timeout=15):
     callers should pass it only during bootstrap.
     """
     ip, user = machine["ip"], machine["user"]
+    port = int(machine.get("port") or 22)
     sock = None
 
     use_jump = (jump is not None
                 and machine.get("scope", "local") == "local"
-                and machine["name"] != cfg.get("jump_host"))
+                and machine["name"] != cfg.get("jump_host")
+                and not machine.get("relay_only"))
 
     if use_jump:
         try:
@@ -94,21 +98,21 @@ def connect(cfg, machine, password=None, jump=None, timeout=15):
             # so the target authenticates us end to end - the bastion never
             # sees our credentials for the target.
             sock = jump.get_transport().open_channel(
-                "direct-tcpip", (ip, 22), ("127.0.0.1", 0), timeout=timeout)
+                "direct-tcpip", (ip, port), ("127.0.0.1", 0), timeout=timeout)
         except Exception as ex:
             raise Unreachable(f"jump channel to {ip}: {type(ex).__name__}: {ex}")
     else:
-        if not port_open(ip, timeout=min(timeout, 6)):
-            raise Unreachable(f"{ip}:22 did not accept a connection")
+        if not port_open(ip, port=port, timeout=min(timeout, 6)):
+            raise Unreachable(f"{ip}:{port} did not accept a connection")
 
     cli = _client()
     try:
         if password is not None:
-            cli.connect(ip, username=user, password=password, sock=sock,
+            cli.connect(ip, port=port, username=user, password=password, sock=sock,
                         timeout=timeout, banner_timeout=25, auth_timeout=25,
                         look_for_keys=False, allow_agent=False)
         else:
-            cli.connect(ip, username=user, sock=sock, timeout=timeout,
+            cli.connect(ip, port=port, username=user, sock=sock, timeout=timeout,
                         banner_timeout=25, auth_timeout=25,
                         look_for_keys=True, allow_agent=True)
         return cli

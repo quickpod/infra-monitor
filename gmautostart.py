@@ -45,7 +45,10 @@ VALUE_NAME = "InfraMonitor"
 
 
 def desired_command():
-    """The exact command line the logon entry should hold.
+    """The exact command line the logon/autostart entry should hold.
+
+    On Linux this is the XDG Exec line; the Windows text below describes the
+    registry form.
 
     Quoted, because the app very plausibly lives under a path with a space in
     it and an unquoted Run value is split on the first one - which turns
@@ -53,6 +56,9 @@ def desired_command():
 
     From source it prefers pythonw.exe: python.exe would pop a console window
     at every logon, which is exactly the thing a tray app must not do."""
+    # Linux: the XDG Exec line, so status() compares like with like
+    if os.name != "nt":
+        return _xdg_exec()
     if gmpaths.frozen():
         return f'"{os.path.realpath(sys.executable)}"'
     exe = sys.executable or "python.exe"
@@ -60,6 +66,72 @@ def desired_command():
     if os.path.isfile(cand):
         exe = cand
     return f'"{exe}" "{os.path.join(gmpaths.APP_DIR, "gmtray.py")}"'
+
+
+# --------------------------------------------------------------- Linux (XDG)
+# Autostart was Windows-only: the registry Run key, with no Linux path at all.
+# On Quick OS that made the tray's "Start with Windows" item both wrongly named
+# and a no-op — it reported success and registered nothing (owner, 2026-08-17:
+# "update for linux first"). The XDG spec's answer is a .desktop file in
+# ~/.config/autostart, which every desktop environment honours.
+XDG_FILE = "quickopen-infra-monitor.desktop"
+
+
+def _xdg_path():
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config")
+    return os.path.join(base, "autostart", XDG_FILE)
+
+
+def _xdg_exec():
+    """The command the autostart entry runs.
+
+    Prefers the packaged launcher (/usr/bin/quickopen-infra-monitor), which sets
+    the bundled runtime up correctly; falls back to this interpreter and script
+    when running from a source checkout.
+    """
+    launcher = "/usr/bin/quickopen-infra-monitor"
+    if os.path.isfile(launcher):
+        return launcher
+    return "%s %s" % (sys.executable or "python3",
+                      os.path.join(gmpaths.APP_DIR, "gmtray.py"))
+
+
+def _xdg_current():
+    try:
+        with open(_xdg_path(), errors="replace") as fh:
+            for line in fh:
+                if line.startswith("Exec="):
+                    return line.split("=", 1)[1].strip()
+    except OSError:
+        return None
+    return None
+
+
+def _xdg_register():
+    path = _xdg_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cmd = _xdg_exec()
+    with open(path, "w") as fh:
+        fh.write("[Desktop Entry]\n"
+                 "Type=Application\n"
+                 "Name=Infra Monitor\n"
+                 "Comment=Watch your machines from the system tray\n"
+                 "Exec=%s\n"
+                 "Icon=quickopen-infra-monitor\n"
+                 "Terminal=false\n"
+                 "X-GNOME-Autostart-enabled=true\n" % cmd)
+    return cmd
+
+
+def _xdg_unregister():
+    try:
+        os.remove(_xdg_path())
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
 
 
 def _winreg():
@@ -73,6 +145,9 @@ def _winreg():
 
 
 def current_command():
+    if os.name != "nt":
+        return _xdg_current()
+
     """What is registered right now, or None."""
     winreg = _winreg()
     if not winreg:
@@ -88,6 +163,9 @@ def current_command():
 
 
 def register():
+    if os.name != "nt":
+        return _xdg_register()
+
     """Point the logon entry at this copy of the app. Returns the command."""
     winreg = _winreg()
     if not winreg:
@@ -100,6 +178,9 @@ def register():
 
 
 def unregister():
+    if os.name != "nt":
+        return _xdg_unregister()
+
     """Remove the logon entry. Absent is success, not an error."""
     winreg = _winreg()
     if not winreg:

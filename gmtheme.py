@@ -227,3 +227,109 @@ def tile(parent, label, value, note, accent, word=None):
     tk.Label(inner, text=note, bg=TH.surface, fg=TH.muted,
              font=(UI, 7)).pack(anchor="w")
     return t
+
+# ------------------------------------------------------------------ dialogs
+# tkinter.messagebox draws the platform's stock dialog — on X11 that is a bare
+# grey Motif-era box with no relation to the app around it (owner, 2026-08-17:
+# "make it more user friendly without xorg dialogs"). These are drop-in
+# replacements with messagebox-compatible signatures, so call sites only change
+# name, and they inherit the live Aura palette like every other surface.
+_KIND = {"info": "accent", "ok": "good", "warn": "warn", "error": "crit"}
+
+
+def _dialog(title, message, parent=None, kind="info", buttons=("OK",),
+            default=0, cancel=None):
+    """Modal, themed, keyboard-friendly. Returns the index of the button used."""
+    import tkinter as tk
+    from tkinter import ttk
+
+    owner = parent if isinstance(parent, tk.Misc) else tk._default_root
+    win = tk.Toplevel(owner) if owner is not None else tk.Tk()
+    win.title(title or "Infra Monitor")
+    win.configure(bg=TH.get("bg", "#12151b"))
+    win.resizable(False, False)
+    try:
+        if owner is not None:
+            win.transient(owner.winfo_toplevel())
+    except Exception:
+        pass
+
+    accent = TH.get(_KIND.get(kind, "accent"), "#5b86f7")
+    tk.Frame(win, bg=accent, height=3).pack(fill="x")      # kind, as a stripe
+
+    body = tk.Frame(win, bg=TH.get("bg", "#12151b"), padx=22, pady=18)
+    body.pack(fill="both", expand=True)
+    ui = family()
+    tk.Label(body, text=title or "Infra Monitor", bg=TH.get("bg", "#12151b"),
+             fg=TH.get("text", "#f1f3f7"), font=(ui, 11, "bold"),
+             anchor="w", justify="left").pack(fill="x")
+    tk.Label(body, text=message, bg=TH.get("bg", "#12151b"),
+             fg=TH.get("muted", "#9aa4b2"), font=(ui, 9), anchor="w",
+             justify="left", wraplength=520).pack(fill="x", pady=(6, 16))
+
+    picked = {"i": cancel if cancel is not None else 0}
+
+    def close(i):
+        picked["i"] = i
+        win.destroy()
+
+    row = tk.Frame(body, bg=TH.get("bg", "#12151b"))
+    row.pack(fill="x")
+    for i, label in reversed(list(enumerate(buttons))):
+        primary = (i == default)
+        b = tk.Button(row, text=label, command=lambda i=i: close(i),
+                      relief="flat", cursor="hand2", font=(ui, 9),
+                      padx=16, pady=6,
+                      bg=accent if primary else TH.get("surface", "#1a1e26"),
+                      fg="#0b0d12" if primary else TH.get("text", "#f1f3f7"),
+                      activebackground=accent if primary
+                      else TH.get("surface2", "#222731"))
+        b.pack(side="right", padx=(8, 0))
+        if primary:
+            b.focus_set()
+            win.bind("<Return>", lambda _e, i=i: close(i))
+    win.bind("<Escape>", lambda _e: close(picked["i"]))
+
+    win.update_idletasks()
+    if owner is not None:
+        try:
+            ox, oy = owner.winfo_rootx(), owner.winfo_rooty()
+            ow, oh = owner.winfo_width(), owner.winfo_height()
+        except Exception:
+            ox = oy = ow = oh = 0
+    else:
+        ox = oy = ow = oh = 0
+    if ow > 1 and oh > 1:
+        x = ox + (ow - win.winfo_reqwidth()) // 2
+        y = oy + (oh - win.winfo_reqheight()) // 3
+    else:
+        x = (win.winfo_screenwidth() - win.winfo_reqwidth()) // 2
+        y = (win.winfo_screenheight() - win.winfo_reqheight()) // 3
+    win.geometry("+%d+%d" % (max(x, 0), max(y, 0)))
+    try:
+        win.grab_set()
+    except Exception:
+        pass
+    win.wait_window()
+    return picked["i"]
+
+
+def notice(title, message, parent=None):
+    """Drop-in for messagebox.showinfo."""
+    _dialog(title, message, parent, kind="info")
+
+
+def warn(title, message, parent=None):
+    """Drop-in for messagebox.showwarning."""
+    _dialog(title, message, parent, kind="warn")
+
+
+def error(title, message, parent=None):
+    """Drop-in for messagebox.showerror."""
+    _dialog(title, message, parent, kind="error")
+
+
+def confirm(title, message, parent=None):
+    """Drop-in for messagebox.askyesno — returns True only for Yes."""
+    return _dialog(title, message, parent, kind="warn",
+                   buttons=("Cancel", "Yes"), default=1, cancel=0) == 1

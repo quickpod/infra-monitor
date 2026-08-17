@@ -547,6 +547,96 @@ def _severity(direction, verdict, peer_class, exposure):
     return "HIGH" if peer_class == "public" else "WARN"
 
 
+def _collect_linux():
+    """The Linux collector, shaped exactly like the PowerShell one.
+
+    "This PC" and the Connections tab ran a PowerShell blob, so on Linux every
+    scan died with FileNotFoundError: 'powershell' and the tab showed
+    "SCAN FAILED - this list is incomplete" (owner screenshot, 2026-08-17).
+    Same fields, from /proc and `ss`, so everything downstream is unchanged.
+
+    Without root, the kernel only reveals socket owners for OUR OWN processes —
+    so `admin` reports what we actually had, and the UI's existing
+    "run elevated" path still means something.
+    """
+    import glob
+    import subprocess
+
+    admin = (os.geteuid() == 0) if hasattr(os, "geteuid") else False
+    out = {"ok": True, "admin": admin, "host": socket.gethostname(),
+           "procs": {}, "conns": []}
+
+    # --- processes: name, exe, cmdline, and the systemd unit if there is one
+    for d in glob.glob("/proc/[0-9]*"):
+        pid = os.path.basename(d)
+        try:
+            with open(os.path.join(d, "comm"), errors="replace") as fh:
+                name = fh.read().strip()
+        except OSError:
+            continue
+        try:
+            path = os.readlink(os.path.join(d, "exe"))
+        except OSError:
+            path = ""                      # kernel thread, or not ours to see
+        try:
+            with open(os.path.join(d, "cmdline"), "rb") as fh:
+                cmd = fh.read().replace(b"\0", b" ").decode(errors="replace").strip()
+        except OSError:
+            cmd = ""
+        svc = ""
+        try:
+            with open(os.path.join(d, "cgroup"), errors="replace") as fh:
+                for line in fh:
+                    if ".service" in line:
+                        svc = line.strip().split("/")[-1]
+                        break
+        except OSError:
+            pass
+        out["procs"][pid] = {"name": name, "rawpath": path, "pathsrc": "/proc",
+                             "cmd": cmd, "svc": svc}
+
+    # --- sockets: `ss` is the supported interface to the same tables
+    try:
+        res = subprocess.run(["ss", "-tunapH"], capture_output=True, text=True,
+                             timeout=30)
+        lines = res.stdout.splitlines()
+    except (OSError, subprocess.TimeoutExpired) as ex:
+        out["ok"] = False
+        out["error"] = "ss: %s" % ex
+        return out
+
+    def split_addr(token):
+        """'10.0.0.1:22' / '[::1]:631' / '*:*' -> (addr, port)."""
+        token = token.strip()
+        if token.startswith("["):
+            host, _, port = token.rpartition("]:")
+            return host.lstrip("["), port
+        host, _, port = token.rpartition(":")
+        return ("" if host in ("*", "0.0.0.0") and port == "*" else host), port
+
+    for line in lines:
+        f = line.split(None, 5)
+        if len(f) < 5:
+            continue
+        netid, state, _rq, _sq, local = f[0], f[1], f[2], f[3], f[4]
+        rest = f[5] if len(f) > 5 else ""
+        peer = rest.split()[0] if rest else ""
+        la, lp = split_addr(local)
+        ra, rp = split_addr(peer) if peer else ("", "0")
+        proto = "UDP" if netid.startswith("udp") else "TCP"
+        # udp has no state column value we can use the same way
+        st = {"ESTAB": "Established", "LISTEN": "Listen", "UNCONN": "Listen"}.get(
+            state.upper(), state.title())
+        pid = -1
+        m = re.search(r"pid=(\d+)", rest)
+        if m:
+            pid = int(m.group(1))
+        out["conns"].append({"la": la, "lp": lp, "ra": ra, "rp": rp,
+                             "state": st, "pid": pid, "proto": proto,
+                             "since": 0})
+    return out
+
+
 def scan(cfg=None):
     """One pass. Never raises: a collector that dies silently would leave the
     tab showing an all-clear it did not earn, so failure comes back as a
@@ -557,7 +647,8 @@ def scan(cfg=None):
             "rows": [], "counts": {}, "deferred": 0,
             "checked_at": time.time(), "elapsed": 0.0}
     try:
-        raw = _run_ps(PS_COLLECT, timeout=120)
+        raw = (_collect_linux() if os.name != "nt"
+               else _run_ps(PS_COLLECT, timeout=120))
     except Exception as ex:
         base["error"] = f"{type(ex).__name__}: {ex}"[:300]
         base["elapsed"] = round(time.time() - t0, 1)

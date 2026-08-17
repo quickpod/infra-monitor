@@ -122,6 +122,12 @@ DEFAULTS = {
 }
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,30}$")
+# A DNS hostname: dot-separated labels of letters/digits/hyphen, no label longer
+# than 63 characters and nothing longer than 253 overall (RFC 1123, plus the
+# leading-digit allowance every resolver actually implements).
+HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$")
 SCOPES = {"local", "public"}
 
 
@@ -136,10 +142,23 @@ def validate_machine(name, ip, user, alias=None):
     # know - the relay's ssh config resolves it. Demanding one would force a
     # placeholder, and placeholders collide with each other and read as real.
     if ip:
+        # An IP *or* a hostname. Demanding a literal address meant a machine with
+        # a DNS name (or an /etc/hosts entry, or a Tailscale/mDNS name) could only
+        # be added through the alias+relay path (owner, 2026-08-17: "for adding a
+        # machine a hostname should be allowed instead of a ip also"). SSH resolves
+        # either, so the config should accept either.
         try:
             ipaddress.ip_address(ip)
         except ValueError:
-            raise ConfigError(f"bad IP {ip!r}")
+            # "10.0.0.256" is a syntactically legal HOSTNAME, so the regex below
+            # would wave it through — but anyone typing it meant an IP address and
+            # mistyped it. Anything made only of digits and dots is judged as an
+            # address, not a name.
+            if all(part.isdigit() for part in ip.split(".") if part != ""):
+                raise ConfigError(f"bad IP {ip!r}")
+            if not HOSTNAME_RE.match(ip):
+                raise ConfigError(
+                    f"bad address {ip!r}: expected an IP address or a hostname")
     elif not alias:
         raise ConfigError(f"{name}: needs either an IP or an alias+via relay")
     if not re.match(r"^[a-z_][a-z0-9_-]*$", user or ""):
@@ -232,6 +251,76 @@ def active(data):
 
 def scope_of(m):
     return m.get("scope", "local")
+
+
+def find_relay(cfg, name):
+    """A relay entry by name, or None.
+
+    Relays live in their own list because a bastion is not necessarily something
+    you MONITOR. Requiring one to be a monitored machine is why relays could not
+    be added at all: sshconn.open_jump looked the name up in machines.json and
+    raised if it was missing (owner, 2026-08-17: "still does not have a way to
+    add relay hosts"). A relay entry carries just enough to ssh through it.
+    """
+    if not name:
+        return None
+    for r in cfg.get("relays", []):
+        if r.get("name") == name:
+            return r
+    return None
+
+
+def resolve_hop(cfg, name):
+    """Whatever `via`/`jump_host` names, as something sshconn can connect to.
+
+    Accepts a monitored machine OR a relay entry, so both work everywhere a
+    relay is referenced. Returns None when the name is unknown.
+    """
+    m = find(cfg, name)
+    if m:
+        return m
+    r = find_relay(cfg, name)
+    if not r:
+        return None
+    # shape it like a machine so callers need no special case
+    return {"name": r["name"], "ip": r.get("ip") or r.get("host") or "",
+            "user": r.get("user") or "root", "port": r.get("port") or 22,
+            "scope": "public", "relay_only": True}
+
+
+def relay_names(cfg):
+    """Every name that may legally appear in `via` / `jump_host`."""
+    return ([m["name"] for m in cfg.get("machines", [])]
+            + [r["name"] for r in cfg.get("relays", [])])
+
+
+def add_relay(cfg, name, host, user="root", port=22):
+    """Register a relay host. Raises ConfigError on bad input."""
+    if not NAME_RE.match(name or ""):
+        raise ConfigError(f"bad relay name {name!r}: letters/digits/.-_ only")
+    if find(cfg, name) or find_relay(cfg, name):
+        raise ConfigError(f"{name!r} is already a machine or relay")
+    validate_machine(name, host, user)          # same address/hostname rules
+    try:
+        port = int(port or 22)
+    except (TypeError, ValueError):
+        raise ConfigError(f"bad port {port!r}")
+    if not 1 <= port <= 65535:
+        raise ConfigError(f"port {port} is out of range")
+    cfg.setdefault("relays", []).append(
+        {"name": name, "ip": host, "user": user or "root", "port": port})
+    return cfg
+
+
+def remove_relay(cfg, name):
+    """Drop a relay, and any reference to it, so nothing points at a ghost."""
+    cfg["relays"] = [r for r in cfg.get("relays", []) if r.get("name") != name]
+    if cfg.get("jump_host") == name:
+        cfg["jump_host"] = ""
+    for m in cfg.get("machines", []):
+        if m.get("via") == name:
+            m.pop("via", None)
+    return cfg
 
 
 def relay_of(cfg, m):

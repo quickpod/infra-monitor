@@ -203,6 +203,8 @@ def gateway_fingerprint(timeout=10):
     # Function-level, as gmnotify does: gmlocal is the heavy module and only
     # this one helper is wanted. It also keeps the import off gmcheck's CLI
     # path, which runs fine without it.
+    if os.name != "nt":
+        return _gateway_fingerprint_linux(timeout)
     import gmlocal
     try:
         d = gmlocal._run_ps(GATEWAY_PS, timeout)
@@ -211,6 +213,62 @@ def gateway_fingerprint(timeout=10):
     if not isinstance(d, dict):
         return None, None
     return _norm_mac(d.get("mac")), (d.get("gateway") or None)
+
+
+def _gateway_fingerprint_linux(timeout=10):
+    """The Linux half of the same question, via `ip` instead of PowerShell.
+
+    Without this the whole feature was dead on Linux: gateway_fingerprint ran
+    PowerShell, so it returned (None, None) on every call, learn_gate raised
+    "no default gateway with a MAC address here", and "Trust this network" could
+    never succeed — which is exactly what it looked like from the tray (owner,
+    2026-08-17: "Trust this network doesnt stay check does it work?"). It did not.
+    """
+    import subprocess
+
+    def run(args):
+        try:
+            return subprocess.run(args, capture_output=True, text=True,
+                                  timeout=timeout).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+
+    gw = None
+    for line in run(["ip", "-4", "route", "show", "default"]).splitlines():
+        parts = line.split()
+        if "via" in parts:
+            gw = parts[parts.index("via") + 1]
+            break
+    if not gw:
+        return None, None
+
+    def mac_of(addr):
+        # `ip neigh` is the live ARP cache; /proc/net/arp is the fallback for
+        # stripped images where iproute2's neigh output differs.
+        for line in run(["ip", "neigh", "show", addr]).splitlines():
+            parts = line.split()
+            if "lladdr" in parts:
+                return parts[parts.index("lladdr") + 1]
+        try:
+            with open("/proc/net/arp", errors="replace") as fh:
+                for row in fh.read().splitlines()[1:]:
+                    f = row.split()
+                    if len(f) >= 4 and f[0] == addr and f[3] != "00:00:00:00:00:00":
+                        return f[3]
+        except OSError:
+            pass
+        return None
+
+    mac = mac_of(gw)
+    if not mac:
+        # The neighbour may simply not be cached yet on a freshly booted
+        # machine; one ping populates it. Never fatal — an un-fingerprintable
+        # gateway must read as "cannot tell", not as a match.
+        run(["ping", "-c", "1", "-W", "1", gw])
+        mac = mac_of(gw)
+    if not mac:
+        return None, gw
+    return _norm_mac(mac), gw
 
 
 def public_ip(timeout=6):
@@ -244,6 +302,27 @@ def gate_ok(cfg):
     public IP if the legacy fallback ran) and exists only so the UI can show
     what the decision was based on."""
     fps = cfg.get("gate_fingerprints") or []
+
+    # FIRST RUN: adopt the network we are on right now.
+    #
+    # Failing closed (below) is right once we know somewhere, but with nothing
+    # learned it made a fresh install monitor NOTHING and say so by naming a
+    # Windows binary and a command-line flag:
+    #     OFF-NETWORK (no known network yet - run InfraMonitor.exe --learn-gate…)
+    # — on Linux, in a product whose rules forbid telling users to use a
+    # terminal (owner, field report 2026-08-17: "no working out of the box needs
+    # fixing"). The machine the user installs on is, by definition, a network
+    # they trust, so record it and carry on. Every OTHER network still has to be
+    # trusted explicitly, which is the property the fail-closed design was
+    # protecting: we never probe private addresses on a stranger's LAN.
+    if not fps and not cfg.get("gate_adopt_disabled"):
+        try:
+            _cfg, mac, label, added = learn_gate(cfg=cfg, name="this network")
+            if added:
+                fps = _cfg.get("gate_fingerprints") or []
+        except RuntimeError:
+            pass                      # no gateway to fingerprint: fall through
+
     if fps:
         mac, _gw = gateway_fingerprint()
         if not mac:
@@ -269,7 +348,9 @@ def gate_ok(cfg):
             except socket.gaierror:
                 continue
         return False, mine, "not on a known network (public-IP fallback)"
-    return False, None, "no known network yet - run InfraMonitor.exe --learn-gate here"
+    # Reached only when there is no default gateway to adopt at all.
+    return False, None, ("not on a network yet - connect, then use "
+                         "Settings -> Trust this network")
 
 
 def learn_gate(cfg=None, name=None):
@@ -357,10 +438,20 @@ def foreign_sessions(cfg, m):
         except ValueError:
             pass
     for other in cfg.get("machines", []):
-        if other.get("ip"):
+        addr = other.get("ip")
+        if not addr:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(addr + "/32", strict=False))
+        except ValueError:
+            # A machine may now be addressed by HOSTNAME, which is not an IP and
+            # must not silently drop it from the allowed-peer set — resolve it,
+            # and if resolution fails leave it out rather than crashing the pass.
             try:
-                nets.append(ipaddress.ip_network(other["ip"] + "/32", strict=False))
-            except ValueError:
+                for info in socket.getaddrinfo(addr, None):
+                    nets.append(ipaddress.ip_network(info[4][0] + "/32",
+                                                     strict=False))
+            except (socket.gaierror, ValueError):
                 pass
     ok_users = {u.lower() for u in cfg.get("expected_login_users", [])}
 
