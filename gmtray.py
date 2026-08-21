@@ -390,12 +390,16 @@ def copyable(parent, text, width=None, **kw):
 class Dashboard(tk.Toplevel):
     def __init__(self, master, app):
         super().__init__(master)
-        # A transient window belongs to its parent: Plasma keeps it with the
-        # app instead of giving it a taskbar entry of its own.
-        try:
-            self.transient(master.winfo_toplevel())
-        except Exception:
-            pass
+        # NO wm transient here. Tk withdraws a transient window whenever its
+        # master is withdrawn, and this app's master is tk.Tk() which App keeps
+        # withdrawn permanently because it lives in the tray. Marking the
+        # dashboard transient therefore pinned it in the withdrawn state, and
+        # deiconify() from the tray menu could never map it: clicking
+        # "Dashboard" silently did nothing on every platform.
+        #
+        # The reason it was added - keeping Plasma from giving the dashboard a
+        # taskbar entry separate from the app - is served by WM_CLASS, which
+        # aura.py already sets correctly, not by transient.
         self.app = app
         self.title("Infra Monitor")
         self.geometry("1400x740")
