@@ -24,6 +24,24 @@ DefaultDirName={autopf}\InfraMonitor
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 UninstallDisplayIcon={app}\InfraMonitor.exe
+; unins000.exe ships UNSIGNED by default, and on a machine with Smart App
+; Control or a WDAC policy enforcing, Windows refuses to load it: the Uninstall
+; button in Settings fails with CodeIntegrity 3077/3033 and WinError 4551,
+; leaving the app impossible to remove through the normal route.
+;
+; Inno writes that binary on the USER'S machine at install time from a template
+; baked into the installer, so no later signing hop can reach it - COMPILE time
+; is the only moment it can be signed, which is what SignedUninstaller=yes does.
+; That needs a SignTool where ISCC runs, so the ISCC step moved onto the signing
+; machine (2026-08-21). ISCC signs uninst.e32, then the setup exe.
+;
+; Guarded by #ifdef so this same .iss still compiles anywhere without the token
+; (CI, a laptop) - just unsigned. publish/scripts/compile-windows-installer.sh
+; passes /DSIGNED_UNINSTALLER and defines the "quickopen" SignTool.
+#ifdef SIGNED_UNINSTALLER
+SignTool=quickopen
+SignedUninstaller=yes
+#endif
 OutputDir=dist
 OutputBaseFilename=InfraMonitor-Setup
 SetupIconFile=..\infra-monitor.ico
