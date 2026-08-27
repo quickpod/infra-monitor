@@ -22,11 +22,15 @@ import json, os, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gmpaths
 
-STATE_PATH = os.path.join(gmpaths.APP_DIR, "alert_state.json")
+# 1.0.14 (Quick OS laptop sweep 2026-08-27): STATE_DIR, not APP_DIR -- on Linux
+# APP_DIR is root-owned /opt/quickopen/infra-monitor and every save raised
+# PermissionError (1,020 tracebacks in one log), so alert de-duplication
+# never persisted. On Windows STATE_DIR == APP_DIR, unchanged there.
+STATE_PATH = os.path.join(gmpaths.STATE_DIR, "alert_state.json")
 # A separate file from the fleet state, not another key inside it: that one is
 # keyed by machine name, and a local finding key colliding with a hostname
 # would silently swallow one of them.
-LOCAL_STATE_PATH = os.path.join(gmpaths.APP_DIR, "alert_state_local.json")
+LOCAL_STATE_PATH = os.path.join(gmpaths.STATE_DIR, "alert_state_local.json")
 # How long a finding is remembered after it stops being seen. A connection that
 # comes and goes every few minutes must not re-alert each time it returns; one
 # that has genuinely been gone for a day is news again if it comes back.
